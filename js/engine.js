@@ -1,7 +1,7 @@
 // Rose — audio engine: project model, mixer graph (tracks, groups, returns, sidechains), transport/scheduler,
 // arrangement + patterns + session clips, automation, recording, MIDI, web plugins, WAV export, bounce-in-place.
 import { createEffect, prepareWorklets, setAt, EFFECTS } from './effects.js';
-import { createInstrument, instDefaults } from './instruments.js';
+import { createInstrument, instDefaults, applyMidiFx, chordOf, arpOrder, ARP_RATES } from './instruments.js';
 
 export const db = v => v <= -60 ? 0 : Math.pow(10, v / 20);
 export const uid = () => Math.random().toString(36).slice(2, 9);
@@ -249,10 +249,10 @@ export class Engine {
   // schedule everything between beats b0..b1 on a segment (also used by offline export)
   schedule(ctx, seg, b0, b1, first, g = this.g, out = this.sources, p = this.p, live = ctx === this.ctx ? this.live : {}) {
     const spb = 60 / p.bpm, T = b => seg.t + (b - seg.b) * spb;
-    const playClip = (s, c, cStart, cEnd) => {
+    const playClip = (s, c, cStart, cEnd, t) => {
       if (cEnd <= b0 || cStart >= b1) return;
       if (isMidi(c)) {
-        if (!s.inst) return; const notes = this.notesOf(c, p), L = Math.max(0.0625, this.loopLen(c, p));
+        if (!s.inst) return; const L = Math.max(0.0625, this.loopLen(c, p)), notes = applyMidiFx(t.midifx, this.notesOf(c, p), L);
         const k0 = Math.max(0, Math.floor((b0 - cStart) / L) - 1), k1 = Math.floor((b1 - cStart) / L);
         for (let k = k0; k <= k1; k++) {
           const base = cStart + k * L;
@@ -266,24 +266,28 @@ export class Engine {
         const L = c.len, loops = cEnd - cStart > L + 1e-6;   // session audio clips loop
         const k0 = loops ? Math.max(0, Math.floor((b0 - cStart) / L)) : 0, k1 = loops ? Math.floor((b1 - cStart) / L) : 0;
         for (let k = k0; k <= k1; k++) {
-          const os = cStart + k * L, oe = Math.min(os + L, cEnd); let startB = null, off = c.offset || 0;
-          if (os >= b0 && os < b1) startB = os; else if (first && os < b0 && oe > b0) { startB = b0; off += (b0 - os) * spb; }
+          const os = cStart + k * L, oe = Math.min(os + L, cEnd), rate = c.rate || 1; let startB = null, off = c.offset || 0;
+          if (os >= b0 && os < b1) startB = os; else if (first && os < b0 && oe > b0) { startB = b0; off += (b0 - os) * spb * rate; }
           if (startB == null) continue;
-          const src = ctx.createBufferSource(), gn = ctx.createGain(); src.buffer = buf; gn.gain.value = db(c.gain || 0);
-          src.connect(gn).connect(s.input); const dur = (oe - startB) * spb, when = T(startB);
-          if (off < buf.duration) { src.start(Math.max(when, ctx.currentTime), off, Math.max(0.001, Math.min(dur, buf.duration - off))); out.push(src); src.onended = () => { const i = out.indexOf(src); if (i >= 0) out.splice(i, 1); }; }
+          const src = ctx.createBufferSource(), gn = ctx.createGain(), g0 = db(c.gain || 0); src.buffer = buf; src.playbackRate.value = rate;
+          src.connect(gn).connect(s.input); const dur = (oe - startB) * spb, when = Math.max(T(startB), ctx.currentTime), endT = T(oe);
+          // clip fades (Pro Tools style)
+          const fi = (c.fadeIn || 0) * spb, fo = (c.fadeOut || 0) * spb, into = (startB - os) * spb;
+          if (fi > 0 && into < fi) { gn.gain.setValueAtTime(g0 * into / fi, when); gn.gain.linearRampToValueAtTime(g0, when + fi - into); } else gn.gain.setValueAtTime(g0, when);
+          if (fo > 0) { const fs = Math.max(when, endT - fo); gn.gain.setValueAtTime(g0, fs); gn.gain.linearRampToValueAtTime(0, endT); }
+          if (off < buf.duration) { src.start(when, off, Math.max(0.001, Math.min(dur * rate, buf.duration - off))); out.push(src); src.onended = () => { const i = out.indexOf(src); if (i >= 0) out.splice(i, 1); }; }
         }
       }
     };
     for (const t of p.tracks) {
       if (t.kind === 'group') continue; const s = g.tracks.get(t.id); if (!s) continue;
       const l = live[t.id];
-      if (l && l.start < b1) { playClip(s, l.clip, l.start, l.stopAt ?? Infinity); if (l.start <= b0 && l.stopAt == null) continue; }
+      if (l && l.start < b1) { playClip(s, l.clip, l.start, l.stopAt ?? Infinity, t); if (l.start <= b0 && l.stopAt == null) continue; }
       for (const c of t.clips) {
         // a session clip replaces the arrangement on its track while it plays (like Ableton)
         const from = l && l.stopAt != null ? Math.max(c.start, l.stopAt) : c.start, to = l && l.stopAt == null ? Math.min(c.start + c.len, l.start) : c.start + c.len;
-        if (from === c.start) playClip(s, c, c.start, to);
-        else if (from < to && b0 >= from) playClip(s, c, c.start, to);
+        if (from === c.start) playClip(s, c, c.start, to, t);
+        else if (from < to && b0 >= from) playClip(s, c, c.start, to, t);
       }
     }
     if (p.metronome && ctx === this.ctx) {
@@ -297,12 +301,42 @@ export class Engine {
 
   // ---------- live playing (MIDI keyboard / computer keys) ----------
   liveOn(trackId, p, v = 0.8) {
-    const s = this.g?.tracks.get(trackId); if (!s?.inst) return; s.inst.noteOn(p, v, this.ctx.currentTime);
+    const s = this.g?.tracks.get(trackId); if (!s?.inst) return; const t = this.p.tracks.find(x => x.id === trackId), mf = t?.midifx;
+    const ps = mf?.chord?.on ? chordOf(p, mf.chord) : [p];
+    if (mf?.arp?.on) { const st = (this.arpHeld ||= {})[trackId] ||= { held: new Map(), step: 0, next: null, v }; ps.forEach(q => st.held.set(q, p)); st.v = v; this.arpStart(trackId); }
+    else ps.forEach((q, i) => s.inst.noteOn(q, v, this.ctx.currentTime + i * (mf?.chord?.strum || 0) * this.spb));
     if (this.recording && this.p.tracks.find(t => t.id === trackId)?.arm) this.liveNotes.set(p, { p, s: this.position(), v, track: trackId });
   }
   liveOff(trackId, p) {
-    const s = this.g?.tracks.get(trackId); s?.inst?.noteOff(p, this.ctx.currentTime);
+    const s = this.g?.tracks.get(trackId), t = this.p.tracks.find(x => x.id === trackId), mf = t?.midifx, st = this.arpHeld?.[trackId];
+    if (st) for (const [q, src] of [...st.held]) if (src === p) st.held.delete(q);
+    (mf?.chord?.on ? chordOf(p, mf.chord) : [p]).forEach(q => s?.inst?.noteOff(q, this.ctx.currentTime));
     const n = this.liveNotes.get(p); if (n) { this.liveNotes.delete(p); n.l = Math.max(0.05, this.position() - n.s); this.recNotes.push(n); }
+  }
+
+  arpStart(trackId) {
+    const st = this.arpHeld[trackId], t = this.p.tracks.find(x => x.id === trackId), a = t.midifx.arp, r = ARP_RATES[a.rate] || 0.25;
+    if (st.next == null || st.next < this.ctx.currentTime - 0.05) {
+      if (this.playing) { const b = this.position(), nb = Math.ceil(b / r - 1e-6) * r; st.next = this.ctx.currentTime + (nb - b) * this.spb; } else st.next = this.ctx.currentTime + 0.01;
+      st.step = 0;
+    }
+    if (!this.arpTimer) this.arpTimer = setInterval(() => this.arpTick(), 20);
+  }
+  arpTick() {
+    const now = this.ctx.currentTime; let any = false;
+    for (const [id, st] of Object.entries(this.arpHeld || {})) {
+      const t = this.p.tracks.find(x => x.id === id), a = t?.midifx?.arp, s = this.g?.tracks.get(id);
+      if (!a?.on || !s?.inst || !st.held.size) { st.next = null; continue; } any = true;
+      const r = (ARP_RATES[a.rate] || 0.25) * this.spb;
+      while (st.next < now + 0.1) {
+        const pitches = [...st.held.keys()], step = st.step;
+        const seq = a.mode === 'Chord stabs' ? null : a.mode === 'As played' ? pitches.flatMap(q => [...Array(a.oct | 0 || 1)].map((_, o) => q + 12 * o)) : arpOrder(pitches, a, step);
+        const when = st.next + (step % 2 === 1 ? (a.swing || 0) * r : 0), len = Math.max(0.02, r * a.gate), v = st.v * (step % 4 === 0 ? 1 : 1 - (a.accent || 0) * 0.5);
+        (seq ? [seq[step % seq.length]] : pitches).forEach(q => { s.inst.noteOn(q, v, when); s.inst.noteOff(q, when + len); });
+        st.step++; st.next += r;
+      }
+    }
+    if (!any) { clearInterval(this.arpTimer); this.arpTimer = null; }
   }
 
   // ---------- recording ----------

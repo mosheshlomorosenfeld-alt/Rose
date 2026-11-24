@@ -192,3 +192,56 @@ body.session .ruler{cursor:default}
 .specwrap canvas{width:100%;height:100%;display:block}.specwrap span{position:absolute;left:10px;top:6px;font:600 11px Inter;color:var(--mute)}
 .outsel{width:100%;font-size:10px;height:22px;border:1px solid var(--line);background:var(--panel2);border-radius:5px}
 .pop button[disabled]{opacity:.4;cursor:default}
+
+/* ---- fit-to-screen layout ---- */
+#app{grid-template-rows:auto minmax(120px,1fr) var(--dockH,44vh)}
+.top{flex-wrap:nowrap;gap:8px;overflow:hidden}
+.top .menu{flex-wrap:nowrap}
+#bLoop,#bMet{padding:0 9px}
+#bLoop .lbl,#bMet .lbl{display:none}
+#mmeter{width:80px}
+#skin{width:96px}
+@media(max-width:1380px){#bLib .lbl,#bFile .lbl{display:none}.seg2 .tg{padding:0 8px}.bpm .lbl{display:none}}
+@media(max-width:1180px){#bAdd .lbl{display:none}#mmeter{display:none}}
+.dock{position:relative}
+.dockgrip{position:absolute;left:0;right:0;top:-4px;height:8px;cursor:ns-resize;z-index:6}
+.dockgrip::after{content:"";position:absolute;left:50%;top:2px;width:44px;height:4px;margin-left:-22px;border-radius:2px;background:var(--line)}
+.dockgrip:hover::after{background:var(--rose)}
+/* mixer fills the panel: faders stretch to the available height */
+#mixer:not([hidden]){display:flex;flex-direction:column;overflow-x:auto;overflow-y:hidden;gap:8px}
+.specwrap{height:64px;flex:none;margin:0}
+.mix{flex:1;min-height:0;align-items:stretch}
+.ch{min-height:0}
+.ch .fz{min-height:40px}
+.ch .fader{height:auto}
+/* device rack: cards fill the height, controls flow into extra columns instead of scrolling */
+#devices:not([hidden]){overflow-x:auto;overflow-y:hidden}
+.rack{height:100%;min-height:0}
+.dev{max-width:none;min-width:240px;height:100%;min-height:0}
+.dev .ps{display:grid;grid-auto-flow:column;grid-auto-columns:250px;gap:5px 18px;overflow:hidden;align-content:start;flex:1;min-height:0}
+.pr{height:24px}
+.addfx{height:100%;justify-content:flex-start}
+/* compact library: two columns of chips, details on hover */
+.lib{width:236px;padding:6px 8px}
+.lib h5{margin:10px 2px 4px}
+.lib .chips2{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+.lib .chips2 button{padding:6px 7px;font-size:12px;border:1px solid var(--line);background:var(--panel2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;border-radius:7px}
+.lib .chips2 button:hover{border-color:var(--rose)}
+.lib .chips2 button.wide{grid-column:1/-1}
+.seq .st{height:22px}
+.dev.dim{opacity:.75}
+.dev.pads{min-width:300px}
+.padbar{display:flex;flex-wrap:wrap;gap:6px;padding:8px 10px 4px;align-items:center;font-size:12px}
+.padbar select{height:26px;border:1px solid var(--line);background:var(--panel2);border-radius:5px}
+.padgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;padding:8px 10px;flex:1;min-height:0}
+.padgrid button{border:1px solid var(--line);background:var(--panel2);border-radius:8px;cursor:pointer;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:40px;touch-action:none}
+.padgrid button:active,.padgrid button:hover{border-color:var(--rose)}.padgrid button:active{background:var(--rose);color:var(--onacc)}
+.padgrid b{font:700 15px 'Space Grotesk'}.padgrid small{font-size:11px;color:var(--mute)}
+#prSw{height:30px;border:1px solid var(--line);background:var(--panel);border-radius:6px}
+/* mixer: spectrum beside the strips so faders get the full height */
+#mixer:not([hidden]){flex-direction:row}
+#mixer .mix{order:1;flex:none}
+#mixer .specwrap{order:2;flex:1 0 260px;height:auto;min-width:260px}
+.ch{gap:3px;padding:5px 4px}
+.ch .snd{gap:1px 4px}
+.rack>.dev,.rack>.addfx{flex:none}

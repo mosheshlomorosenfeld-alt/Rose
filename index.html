@@ -31,18 +31,18 @@
       <button id="bPlay" class="ib play" title="Play / pause (Space)" aria-label="Play"><svg><use href="#i-play"/></svg></button>
       <button id="bStop" class="ib" title="Stop (Enter) — press twice to go back to the start" aria-label="Stop"><svg><use href="#i-stop"/></svg></button>
       <button id="bRec" class="ib rec" title="Record (R) — arm a track with ● first" aria-label="Record"><svg><use href="#i-rec"/></svg></button>
-      <button id="bLoop" class="tg" title="Loop the highlighted region (drag across the top of the ruler to set it)"><svg width="16" height="16"><use href="#i-loop"/></svg>&nbsp;Loop</button>
-      <button id="bMet" class="tg" title="Metronome (M)"><svg width="16" height="16"><use href="#i-click"/></svg>&nbsp;Click</button>
+      <button id="bLoop" class="tg" aria-label="Loop" title="Loop — loops the highlighted region (drag across the top of the ruler to set it)"><svg width="16" height="16"><use href="#i-loop"/></svg><span class="lbl">&nbsp;Loop</span></button>
+      <button id="bMet" class="tg" aria-label="Metronome" title="Metronome / click (M)"><svg width="16" height="16"><use href="#i-click"/></svg><span class="lbl">&nbsp;Click</span></button>
     </div>
     <div class="grp seg2" role="group" aria-label="View"><button id="vArr" class="tg on" title="Arrangement: your song on a timeline">Arrange</button><button id="vSes" class="tg" title="Session: launch clips and scenes live (Ableton style)">Session</button></div>
     <div class="lcd" title="Bar . beat . sixteenth"><span id="pos">1.1.1</span><small id="clock">0:00.0</small></div>
-    <label class="bpm" title="Tempo in beats per minute">Tempo <input id="bpm" type="number" min="40" max="240" step="1" value="126"></label>
+    <label class="bpm" title="Tempo in beats per minute"><span class="lbl">Tempo</span> <input id="bpm" type="number" min="40" max="240" step="1" value="126"></label>
     <canvas id="mmeter" width="120" height="20" aria-label="Master level"></canvas>
     <div class="spacer"></div>
     <div class="menu">
-      <button id="bAdd" class="tb accent" aria-haspopup="true"><svg><use href="#i-plus"/></svg>&nbsp;Add track</button>
-      <button id="bLib" class="tb" title="Show or hide the sounds & effects library"><svg><use href="#i-lib"/></svg>&nbsp;Library</button>
-      <button id="bFile" class="tb" aria-haspopup="true"><svg><use href="#i-file"/></svg>&nbsp;File</button>
+      <button id="bAdd" class="tb accent" aria-haspopup="true"><svg><use href="#i-plus"/></svg><span class="lbl">&nbsp;Add track</span></button>
+      <button id="bLib" class="tb" title="Show or hide the sounds & effects library"><svg><use href="#i-lib"/></svg><span class="lbl">&nbsp;Library</span></button>
+      <button id="bFile" class="tb" aria-haspopup="true"><svg><use href="#i-file"/></svg><span class="lbl">&nbsp;File</span></button>
       <button id="bUndo" class="tb" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button><button id="bRedo" class="tb" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
       <select id="skin" aria-label="Colour theme" title="Colour theme"><option value="">Plum</option><option value="ocean">Ocean</option><option value="sunset">Sunset</option><option value="studio">Studio light</option></select>
       <button id="bHelp" class="tb" title="How to use Rose (?)" aria-label="Help">?</button>
@@ -60,7 +60,7 @@
     </div>
   </main>
 
-  <section class="dock">
+  <section class="dock"><div class="dockgrip" id="dockgrip" title="Drag to resize" role="separator" aria-orientation="horizontal"></div>
     <nav class="tabs" role="tablist">
       <button data-tab="editor" class="on" title="Edit notes, drums or audio of the selected clip">Editor</button><button data-tab="devices" title="Instrument and effects of the selected track">Sound &amp; FX</button><button data-tab="mixer" title="Levels, panning, sends and meters">Mixer</button><button data-tab="plugins" title="VST, SHRUB, web plugins and MIDI">Plugins</button>
       <span class="dockinfo" id="dockinfo"></span>

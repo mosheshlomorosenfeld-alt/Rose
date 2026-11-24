@@ -135,3 +135,43 @@ export function createInstrument(ctx, track, env) {
   for (const [k, v] of Object.entries(p)) if (k !== 'preset') inst.set(k, v);
   return inst;
 }
+
+// ---------- MIDI tools: arpeggiator + chord maker (applied before the instrument, like Cubase MIDI inserts) ----------
+export const CHORDS = { 'Major': [0, 4, 7], 'Minor': [0, 3, 7], 'Dominant 7': [0, 4, 7, 10], 'Major 7': [0, 4, 7, 11], 'Minor 7': [0, 3, 7, 10], 'Sus2': [0, 2, 7], 'Sus4': [0, 5, 7], 'Add9': [0, 4, 7, 14], 'Power': [0, 7, 12], 'Octave': [0, 12] };
+export const ARP_RATES = { '1/4': 1, '1/8': 0.5, '1/8 triplet': 1 / 3, '1/16': 0.25, '1/16 triplet': 1 / 6, '1/32': 0.125 };
+export const ARP_PARAMS = [{ id: 'on', label: 'Arpeggiator on', type: 'toggle', def: false }, S('mode', 'Pattern', ['Up', 'Down', 'Up-down', 'Down-up', 'As played', 'Random', 'Chord stabs'], 'Up'),
+  S('rate', 'Rate', Object.keys(ARP_RATES), '1/16'), R('oct', 'Octaves', 1, 4, 1, 1), R('gate', 'Gate (length)', 0.1, 1, 0.6, 0.01), R('swing', 'Swing', 0, 0.5, 0, 0.01), R('accent', 'Accent on beat', 0, 1, 0.3, 0.01)];
+export const CHORD_PARAMS = [{ id: 'on', label: 'Chord maker on', type: 'toggle', def: false }, S('type', 'Chord', Object.keys(CHORDS), 'Major'), R('inv', 'Inversion', 0, 3, 0, 1), R('strum', 'Strum', 0, 0.25, 0, 0.005, 'beats')];
+export const midiDefaults = () => ({ arp: Object.fromEntries(ARP_PARAMS.map(p => [p.id, p.def])), chord: Object.fromEntries(CHORD_PARAMS.map(p => [p.id, p.def])) });
+export function chordOf(p, c) {
+  const iv = CHORDS[c.type] || CHORDS.Major; let ps = iv.map(x => p + x);
+  for (let i = 0; i < (c.inv | 0); i++) { ps.sort((a, b) => a - b); ps.push(ps.shift() + 12); }
+  return ps.sort((a, b) => a - b);
+}
+export function arpOrder(pitches, a, step) {
+  const base = [...new Set(pitches)].sort((x, y) => x - y), up = [];
+  for (let o = 0; o < (a.oct | 0 || 1); o++) base.forEach(p => up.push(p + 12 * o));
+  const m = a.mode;
+  if (m === 'Down') return up.slice().reverse();
+  if (m === 'Up-down') return up.length < 3 ? up : up.concat(up.slice(1, -1).reverse());
+  if (m === 'Down-up') { const d = up.slice().reverse(); return d.length < 3 ? d : d.concat(d.slice(1, -1).reverse()); }
+  if (m === 'Random') { const r = up.slice(); let s = (step * 2654435761) >>> 0; for (let i = r.length - 1; i > 0; i--) { s = (s * 1103515245 + 12345) >>> 0; const j = s % (i + 1); [r[i], r[j]] = [r[j], r[i]]; } return r; }
+  return up;   // Up, As played (handled by caller), Chord stabs (caller)
+}
+// turn a clip's notes into what the MIDI tools play
+export function applyMidiFx(mf, notes, L) {
+  if (!mf) return notes; let out = notes;
+  if (mf.chord?.on) out = out.flatMap(n => chordOf(n.p, mf.chord).map((p, i) => ({ ...n, p, s: n.s + i * (mf.chord.strum || 0), l: Math.max(0.05, n.l - i * (mf.chord.strum || 0)) })));
+  const a = mf.arp; if (!a?.on || !out.length) return out;
+  const r = ARP_RATES[a.rate] || 0.25, res = []; let cnt = 0;
+  for (let i = 0, t0 = 0; t0 < L - 1e-9; i++, t0 = i * r) {
+    const held = out.filter(n => n.s <= t0 + 1e-6 && n.s + n.l > t0 + 1e-6);
+    if (!held.length) { cnt = 0; continue; }
+    const v = Math.min(1, Math.max(...held.map(n => n.v)) * (Math.abs(t0 % 1) < 1e-6 ? 1 : 1 - (a.accent || 0) * 0.5));
+    const s = t0 + (i % 2 === 1 ? (a.swing || 0) * r : 0), l = Math.max(0.02, r * a.gate);
+    if (a.mode === 'Chord stabs') held.forEach(n => res.push({ p: n.p, s, l, v }));
+    else { const seq = a.mode === 'As played' ? held.slice().sort((x, y) => x.s - y.s).flatMap(n => [...Array(a.oct | 0 || 1)].map((_, o) => n.p + 12 * o)) : arpOrder(held.map(n => n.p), a, cnt); res.push({ p: seq[cnt % seq.length], s, l, v }); }
+    cnt++;
+  }
+  return res;
+}

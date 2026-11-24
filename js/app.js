@@ -1,7 +1,7 @@
 // Rose — UI: arrangement, track headers, piano roll, step sequencer, device rack, mixer, plugins, keyboard & MIDI.
-import { Engine, newTrack, newProject, blankProject, uid, db, isMidi, upgrade, autoRange, SCENES } from './engine.js';
+import { Engine, newTrack, newProject, blankProject, uid, db, isMidi, upgrade, autoRange, SCENES, encodeWav } from './engine.js';
 import { EFFECTS } from './effects.js';
-import { INSTRUMENTS, SYNTH_PRESETS, DRUM_ROWS, instDefaults } from './instruments.js';
+import { INSTRUMENTS, SYNTH_PRESETS, DRUM_ROWS, instDefaults, ARP_PARAMS, CHORD_PARAMS, midiDefaults, applyMidiFx, chordOf } from './instruments.js';
 
 const E = new Engine(); window.roseEngine = E;
 const $ = s => document.querySelector(s);
@@ -9,6 +9,8 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const UI = { track: null, clip: null, ppb: 44, snap: 0.25, tab: 'editor', dev: { kind: 'track', id: null }, oct: 4, hist: [], fut: [], prGrid: 0.25, prZoom: 1, peaks: new Map(), confirmNew: 0 };
 const LANE = 68, NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 const nname = p => NOTE_NAMES[p % 12] + (Math.floor(p / 12) - 1);
+const probe = document.createElement('i'); probe.style.display = 'none'; document.documentElement.append(probe);
+const cssColor = v => { probe.style.color = `var(${v})`; return getComputedStyle(probe).color; };   // resolves light-dark() for canvas drawing
 const toast = m => { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 2600); };
 E.on((type, d) => { if (type === 'error') toast(d); if (type === 'transport') paintTransport(); if (type === 'recorded') { commit(true); } });
 
@@ -373,7 +375,10 @@ function drawClip(el, fc) {
     g.globalAlpha = 1;
   } else {
     const pk = peaksFor(c.sample), b = E.buffers.get(c.sample); if (!pk) return; const sr = b.sampleRate / 256, mid = H / 2;
-    for (let x = 0; x < W; x++) { const sec = (c.offset || 0) + x / W * c.len * E.spb, i = Math.floor(sec * sr); if (i >= pk.length) break; const a = pk[i] * mid * db(c.gain || 0); g.fillRect(x, mid - a, 1, Math.max(1, a * 2)); }
+    for (let x = 0; x < W; x++) { const sec = (c.offset || 0) + x / W * c.len * E.spb * (c.rate || 1), i = Math.floor(sec * sr); if (i >= pk.length) break; const a = pk[i] * mid * db(c.gain || 0); g.fillRect(x, mid - a, 1, Math.max(1, a * 2)); }
+    g.strokeStyle = cssColor('--ink'); g.lineWidth = 1.2; g.beginPath();
+    if (c.fadeIn) { const fx = c.fadeIn / c.len * W; g.moveTo(0, H); g.lineTo(fx, 0); }
+    if (c.fadeOut) { const fx = W - c.fadeOut / c.len * W; g.moveTo(fx, 0); g.lineTo(W, H); } g.stroke();
   }
 }
 // ---------- dock ----------
@@ -415,12 +420,16 @@ function bindClipBar(fc, rerender) {
 function renderPianoRoll(fc, box) {
   const grids = { '1/4': 1, '1/8': 0.5, '1/16': 0.25, '1/32': 0.125 };
   box.innerHTML = clipBar(fc, `<select id="prGrid" aria-label="Grid">${Object.entries(grids).map(([k, v]) => `<option value="${v}" ${v === UI.prGrid ? 'selected' : ''}>Grid ${k}</option>`).join('')}</select>
-    <button id="prQ">Quantize</button><button id="prUp">Oct +</button><button id="prDn">Oct −</button><label>Zoom <input id="prZ" type="range" min="0.5" max="3" step="0.1" value="${UI.prZoom}" style="width:90px;padding:0"></label>`) +
+    <button id="prQ">Quantize</button><select id="prSw" aria-label="Swing" title="Swing applied by Quantize"><option value="0">Straight</option><option value="0.1">Swing 10%</option><option value="0.2">Swing 20%</option><option value="0.33">Swing 33%</option><option value="0.5">Swing 50%</option></select><button id="prHum" title="Cubase-style humanize: tiny random timing and velocity changes">Humanize</button><button id="prLeg" title="Stretch each note to the next one">Legato</button><button id="prVel" title="Velocity: louder (+) / Shift-click softer">Vel ±</button><button id="prUp">Oct +</button><button id="prDn">Oct −</button><label>Zoom <input id="prZ" type="range" min="0.5" max="3" step="0.1" value="${UI.prZoom}" style="width:90px;padding:0"></label>`) +
     `<div class="prwrap" id="prwrap"><canvas id="pr"></canvas></div>`;
   bindClipBar(fc);
   $('#prGrid').onchange = e => { UI.prGrid = +e.target.value; draw(); };
   $('#prZ').oninput = e => { UI.prZoom = +e.target.value; size(); draw(); };
-  $('#prQ').onclick = () => { snapshot(); fc.c.notes.forEach(n => n.s = Math.round(n.s / UI.prGrid) * UI.prGrid); commit(false); };
+  $('#prSw').value = UI.swing || 0; $('#prSw').onchange = e => UI.swing = +e.target.value;
+  $('#prQ').onclick = () => { snapshot(); const g = UI.prGrid, sw = UI.swing || 0; fc.c.notes.forEach(n => { const k = Math.round(n.s / g); n.s = k * g + (k % 2 === 1 ? sw * g : 0); }); commit(false); toast(sw ? `Quantized with ${Math.round(sw * 100)}% swing` : 'Quantized'); };
+  $('#prHum').onclick = () => { snapshot(); fc.c.notes.forEach(n => { n.s = Math.max(0, n.s + (Math.random() - 0.5) * 0.04); n.v = Math.max(0.1, Math.min(1, n.v + (Math.random() - 0.5) * 0.2)); }); commit(false); toast('Humanized'); };
+  $('#prLeg').onclick = () => { snapshot(); const ns = fc.c.notes.slice().sort((a, b) => a.s - b.s); ns.forEach(n => { const nx = ns.find(m => m.s > n.s + 1e-6); n.l = Math.max(0.05, (nx ? nx.s : fc.c.len) - n.s); }); commit(false); toast('Legato'); };
+  $('#prVel').onclick = e => { snapshot(); fc.c.notes.forEach(n => n.v = Math.max(0.05, Math.min(1, n.v + (e.shiftKey ? -0.1 : 0.1)))); commit(false); };
   $('#prUp').onclick = () => { snapshot(); fc.c.notes.forEach(n => n.p = Math.min(120, n.p + 12)); commit(false); };
   $('#prDn').onclick = () => { snapshot(); fc.c.notes.forEach(n => n.p = Math.max(12, n.p - 12)); commit(false); };
   const LO = 24, HI = 108, RH = 12, KW = 46, cv = $('#pr'), wrap = $('#prwrap'); let ppb;
@@ -429,9 +438,9 @@ function renderPianoRoll(fc, box) {
   const draw = () => {
     const g = cv.getContext('2d'), W = KW + fc.c.len * ppb, H = (HI - LO + 1) * RH, cs = getComputedStyle(document.documentElement);
     g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0); g.clearRect(0, 0, W, H);
-    for (let p = LO; p <= HI; p++) { const black = [1, 3, 6, 8, 10].includes(p % 12); g.fillStyle = black ? cs.getPropertyValue('--lane2') : cs.getPropertyValue('--lane'); g.fillRect(KW, yOf(p), W, RH); if (p % 12 === 0) { g.fillStyle = cs.getPropertyValue('--line'); g.fillRect(KW, yOf(p) + RH - 1, W, 1); } }
-    for (let b = 0; b <= fc.c.len + 1e-9; b += UI.prGrid) { g.fillStyle = cs.getPropertyValue(Math.abs(b % P().sig) < 1e-9 ? '--mute' : Math.abs(b % 1) < 1e-9 ? '--line' : '--grid'); g.fillRect(KW + b * ppb, 0, 1, H); }
-    for (const n of fc.c.notes) { g.fillStyle = fc.t.color; g.globalAlpha = 0.45 + n.v * 0.55; g.fillRect(KW + n.s * ppb + 1, yOf(n.p) + 1, Math.max(3, n.l * ppb - 2), RH - 2); g.globalAlpha = 1; g.strokeStyle = cs.getPropertyValue('--ink'); g.strokeRect(KW + n.s * ppb + 1.5, yOf(n.p) + 1.5, Math.max(3, n.l * ppb - 3), RH - 3); }
+    for (let p = LO; p <= HI; p++) { const black = [1, 3, 6, 8, 10].includes(p % 12); g.fillStyle = black ? cssColor('--lane2') : cssColor('--lane'); g.fillRect(KW, yOf(p), W, RH); if (p % 12 === 0) { g.fillStyle = cssColor('--line'); g.fillRect(KW, yOf(p) + RH - 1, W, 1); } }
+    for (let b = 0; b <= fc.c.len + 1e-9; b += UI.prGrid) { g.fillStyle = cssColor(Math.abs(b % P().sig) < 1e-9 ? '--mute' : Math.abs(b % 1) < 1e-9 ? '--line' : '--grid'); g.fillRect(KW + b * ppb, 0, 1, H); }
+    for (const n of fc.c.notes) { g.fillStyle = fc.t.color; g.globalAlpha = 0.45 + n.v * 0.55; g.fillRect(KW + n.s * ppb + 1, yOf(n.p) + 1, Math.max(3, n.l * ppb - 2), RH - 2); g.globalAlpha = 1; g.strokeStyle = cssColor('--ink'); g.strokeRect(KW + n.s * ppb + 1.5, yOf(n.p) + 1.5, Math.max(3, n.l * ppb - 3), RH - 3); }
     for (let p = LO; p <= HI; p++) { const black = [1, 3, 6, 8, 10].includes(p % 12); g.fillStyle = black ? '#222' : '#f4f1ec'; g.fillRect(0, yOf(p), KW, RH); g.fillStyle = '#999'; g.fillRect(0, yOf(p) + RH - 1, KW, 1); if (p % 12 === 0) { g.fillStyle = '#333'; g.font = '9px Inter'; g.fillText(nname(p), 4, yOf(p) + 10); } }
   };
   size(); draw(); wrap.scrollTop = yOf(Math.max(...fc.c.notes.map(n => n.p), 72)) - 40;
@@ -474,19 +483,49 @@ function renderSeq(fc, box) {
     renderSeq(fc, box); commitQuiet();
   };
 }
+function regionPeak(b, c) { const sr = b.sampleRate, s0 = Math.floor((c.offset || 0) * sr), s1 = Math.min(b.length, s0 + Math.floor(c.len * E.spb * (c.rate || 1) * sr)); let m = 0; for (let ch = 0; ch < b.numberOfChannels; ch++) { const d = b.getChannelData(ch); for (let i = s0; i < s1; i++) { const v = Math.abs(d[i]); if (v > m) m = v; } } return m; }
 function renderAudioEditor(fc, box) {
   const c = fc.c, b = E.buffers.get(c.sample);
   box.innerHTML = clipBar(fc) + `<div class="dev" style="max-width:none"><div class="ps">
     <div class="pr"><label>Gain</label><input id="aG" type="range" min="-24" max="12" step="0.1" value="${c.gain || 0}"><output>${(c.gain || 0).toFixed(1)} dB</output></div>
     <div class="pr"><label>Trim start</label><input id="aO" type="range" min="0" max="${b ? b.duration.toFixed(2) : 0}" step="0.01" value="${c.offset || 0}"><output>${(c.offset || 0).toFixed(2)} s</output></div>
     <div class="pr"><label>Source</label><span>${esc(audioName(c.sample))} · ${b ? b.duration.toFixed(1) + ' s' : 'missing audio'}</span></div>
-    <div class="prbar"><button id="aFit">Fit length to audio</button><button id="aSplit">Split at playhead (Ctrl+E)</button></div></div></div>`;
+    <div class="pr"><label>Fade in</label><input id="aFi" type="range" min="0" max="${Math.max(0.25, c.len / 2).toFixed(2)}" step="0.0625" value="${c.fadeIn || 0}"><output>${(c.fadeIn || 0).toFixed(2)} beats</output></div>
+    <div class="pr"><label>Fade out</label><input id="aFo" type="range" min="0" max="${Math.max(0.25, c.len / 2).toFixed(2)}" step="0.0625" value="${c.fadeOut || 0}"><output>${(c.fadeOut || 0).toFixed(2)} beats</output></div>
+    <div class="pr"><label title="Varispeed: changes speed and pitch together">Speed / pitch</label><input id="aRate" type="range" min="-12" max="12" step="1" value="${Math.round(12 * Math.log2(c.rate || 1))}"><output>${Math.round(12 * Math.log2(c.rate || 1))} st</output></div>
+    <div class="pr"><label title="Strip Silence threshold">Silence below</label><input id="aTh" type="range" min="-70" max="-10" step="1" value="${UI.stripTh || -40}"><output>${UI.stripTh || -40} dB</output></div>
+    <div class="prbar"><button id="aFit">Fit length to audio</button><button id="aSplit">Split at playhead (Ctrl+E)</button><button id="aStrip" title="Pro Tools Strip Silence: cut the clip into pieces wherever it's quiet">Strip silence</button><button id="aNorm" title="Raise the clip gain so its loudest peak hits -0.3 dB">Normalize</button><button id="aRev" title="Play the clip backwards">Reverse</button></div></div></div>`;
   bindClipBar(fc);
   $('#aG').oninput = e => { c.gain = +e.target.value; e.target.nextElementSibling.textContent = c.gain.toFixed(1) + ' dB'; renderLanes(); };
   $('#aG').onchange = () => { persist(); };
   $('#aO').oninput = e => { c.offset = +e.target.value; e.target.nextElementSibling.textContent = c.offset.toFixed(2) + ' s'; renderLanes(); };
   $('#aO').onchange = () => persist();
-  $('#aFit').onclick = () => { if (!b) return; snapshot(); c.len = (b.duration - (c.offset || 0)) / E.spb; commit(false); };
+  $('#aFit').onclick = () => { if (!b) return; snapshot(); c.len = (b.duration - (c.offset || 0)) / E.spb / (c.rate || 1); commit(false); };
+  const live = (id, key, fmt2) => { $(id).onpointerdown = () => snapshot(); $(id).oninput = e => { c[key] = +e.target.value; e.target.nextElementSibling.textContent = fmt2(c[key]); renderLanes(); }; $(id).onchange = () => persist(); };
+  live('#aFi', 'fadeIn', v => v.toFixed(2) + ' beats'); live('#aFo', 'fadeOut', v => v.toFixed(2) + ' beats');
+  $('#aRate').onpointerdown = () => snapshot(); $('#aRate').oninput = e => { c.rate = Math.pow(2, +e.target.value / 12); e.target.nextElementSibling.textContent = e.target.value + ' st'; renderLanes(); }; $('#aRate').onchange = () => persist();
+  $('#aTh').oninput = e => { UI.stripTh = +e.target.value; e.target.nextElementSibling.textContent = e.target.value + ' dB'; };
+  $('#aNorm').onclick = () => { if (!b) return; const pk = regionPeak(b, c); if (pk <= 0) return toast('This clip is silent'); snapshot(); c.gain = +(-20 * Math.log10(pk) - 0.3).toFixed(1); commit(false); toast(`Clip gain set to ${c.gain > 0 ? '+' : ''}${c.gain} dB`); };
+  $('#aRev').onclick = async () => {
+    if (!b) return; const nb = new AudioBuffer({ length: b.length, numberOfChannels: b.numberOfChannels, sampleRate: b.sampleRate });
+    for (let ch = 0; ch < b.numberOfChannels; ch++) { const d = b.getChannelData(ch).slice().reverse(); nb.copyToChannel(d, ch); }
+    const id = await E.addAudio(await encodeWav(nb).arrayBuffer(), audioName(c.sample) + ' (reversed)'); if (!id) return; snapshot();
+    P().audio[id] = { name: audioName(c.sample) + ' (reversed)' }; const used = c.len * E.spb * (c.rate || 1); c.offset = Math.max(0, b.duration - (c.offset || 0) - used); c.sample = id; await commit(false); toast('Reversed');
+  };
+  $('#aStrip').onclick = async () => {
+    if (!b) return; const th = Math.pow(10, (UI.stripTh || -40) / 20), rate = c.rate || 1, sr = b.sampleRate, win = Math.floor(sr * 0.01);
+    const s0 = Math.floor((c.offset || 0) * sr), s1 = Math.min(b.length, s0 + Math.floor(c.len * E.spb * rate * sr)), chans = [...Array(b.numberOfChannels)].map((_, i) => b.getChannelData(i));
+    const loud = []; for (let i = s0; i < s1; i += win) { let m = 0; for (const d of chans) for (let j = i; j < Math.min(s1, i + win); j++) m = Math.max(m, Math.abs(d[j])); loud.push(m >= th); }
+    const regs = []; let st = -1, gap = 0; const minGap = 10, pad = 1;   // windows of 10 ms: merge gaps under 100 ms
+    loud.forEach((l, i) => { if (l) { if (st < 0) st = i; gap = 0; } else if (st >= 0 && ++gap > minGap) { regs.push([st, i - gap + 1]); st = -1; gap = 0; } });
+    if (st >= 0) regs.push([st, loud.length]);
+    const keep = regs.filter(([a, z]) => z - a >= 5).map(([a, z]) => [Math.max(0, a - pad), Math.min(loud.length, z + pad)]);
+    if (!keep.length) return toast('Everything is below the threshold — lower “Silence below”'); if (keep.length === 1 && keep[0][0] === 0 && keep[0][1] >= loud.length - 1) return toast('No silence found at this threshold');
+    snapshot(); const t = fc.t, secPerWin = win / sr;
+    t.clips = t.clips.filter(x => x !== c);
+    keep.forEach(([a, z], i) => t.clips.push({ ...c, id: uid(), name: c.name + ' ' + (i + 1), start: c.start + a * secPerWin / rate / E.spb, len: (z - a) * secPerWin / rate / E.spb, offset: (c.offset || 0) + a * secPerWin, fadeIn: 0.03, fadeOut: 0.06 }));
+    UI.clip = null; await commit(false); toast(`Strip silence: ${keep.length} region${keep.length === 1 ? '' : 's'} kept`);
+  };
   $('#aSplit').onclick = splitClip;
 }
 
@@ -510,6 +549,9 @@ function renderDevices() {
   if (UI.dev.kind === 'track' && o.kind === 'inst') h += `<label>Instrument</label><select id="instSel">${Object.entries(INSTRUMENTS).map(([k, d]) => `<option value="${k}" ${k === o.inst ? 'selected' : ''}>${d.name}</option>`).join('')}</select>`;
   h += `</div>`;
   if (UI.dev.kind === 'track' && o.kind === 'inst') {
+    o.midifx ||= midiDefaults();
+    h += `<div class="dev ${o.midifx.arp.on || o.midifx.chord.on ? '' : 'dim'}" id="midiCard"><h4><span class="t">MIDI tools</span><button data-mfx="print" title="Write what the arp/chord maker plays into the selected clip, so you can edit the notes">Print to clip</button></h4><div class="ps">${paramsHtml(CHORD_PARAMS, o.midifx.chord, 'chord')}${paramsHtml(ARP_PARAMS, o.midifx.arp, 'arp')}</div></div>`;
+    h += chordPadsHtml(o);
     h += `<div class="dev" style="--c:${o.color}"><h4 style="border-top:3px solid ${o.color}"><span class="t">${INSTRUMENTS[o.inst].name}</span></h4><div class="ps">${paramsHtml(INSTRUMENTS[o.inst].params, o.instParams, 'inst')}`;
     if (o.inst === 'sampler') h += `<div class="pr"><label>Sample</label><select data-k="inst" data-p="sample"><option value="">— choose —</option>${Object.keys(P().audio || {}).filter(id => E.buffers.has(id)).map(id => `<option value="${id}" ${o.instParams.sample === id ? 'selected' : ''}>${esc(audioName(id))}</option>`).join('')}</select></div><label class="tb file" style="height:30px">Load sample…<input id="smpFile" type="file" accept="audio/*" hidden></label>`;
     if (o.inst === 'external') h += `<div class="pr"><label>MIDI output</label><select data-k="inst" data-p="port">${(UI.midiOuts || []).length ? UI.midiOuts.map(n => `<option ${o.instParams.port === n ? 'selected' : ''}>${esc(n)}</option>`).join('') : '<option value="">No MIDI outputs found</option>'}</select></div><p style="font-size:12px;color:var(--mute);margin:4px 0 0">Plays SHRUB's browser editor (set its MIDI in to the same virtual port, e.g. the Mac IAC Driver), an FM-1 over USB, or any synth. Not captured in WAV export — record its audio back in on an audio track.</p>`;
@@ -533,6 +575,12 @@ function renderDevices() {
   if ($('#smpFile')) $('#smpFile').onchange = async e => { const f = e.target.files[0]; if (!f) return; const id = await E.addAudio(await f.arrayBuffer(), f.name); if (!id) return; P().audio[id] = { name: f.name.replace(/\.[^.]+$/, '') }; snapshot(); o.instParams.sample = id; await commit(true); };
   $('#fxAdd').onchange = async e => { const k = e.target.value; if (!k) return; snapshot(); o.inserts.push({ id: uid(), type: k, params: {}, bypass: false }); await commit(true); };
   $('#wamAdd').onclick = async () => { const u = $('#wamUrl').value.trim(); if (!/^https:\/\//.test(u)) return toast('Paste the https:// address of a WAM plugin'); snapshot(); o.inserts.push({ id: uid(), type: 'wam', url: u, params: {}, bypass: false }); await commit(true); toast('Loading web plugin…'); };
+  bindChordPads(o);
+  if ($('[data-mfx=print]')) $('[data-mfx=print]').onclick = async () => {
+    const fc = UI.clip && findClip(UI.clip); if (!fc || fc.t !== o || !isMidi(fc.c)) return toast('Select one of this track’s MIDI clips first');
+    const tgt = fc.c.pattern ? P().patterns[fc.c.pattern] : fc.c, L = fc.c.pattern ? tgt.len : fc.c.len; snapshot();
+    tgt.notes = applyMidiFx(o.midifx, tgt.notes, L); o.midifx.arp.on = false; o.midifx.chord.on = false; await commit(false); toast('Printed — the notes are now in the clip and the MIDI tools are off');
+  };
   box.querySelectorAll('[data-a]').forEach(b => b.onclick = async () => {
     const id = b.closest('[data-slot]').dataset.slot, i = o.inserts.findIndex(s => s.id === id), a = b.dataset.a;
     if (a === 'gui') { const f = E.stripFor(UI.dev.kind, UI.dev.id)?.fx.find(f => f.slot.id === id); return openWamGui(f?.node?.wam); }
@@ -543,17 +591,51 @@ function renderDevices() {
   });
   box.querySelectorAll('[data-k]').forEach(inp => {
     const k = inp.dataset.k, pid = inp.dataset.p;
-    const pdef = k === 'inst' ? INSTRUMENTS[o.inst].params.find(p => p.id === pid) : EFFECTS[o.inserts.find(s => s.id === k)?.type]?.params.find(p => p.id === pid);
+    const pdef = k === 'inst' ? INSTRUMENTS[o.inst].params.find(p => p.id === pid) : k === 'arp' ? ARP_PARAMS.find(p => p.id === pid) : k === 'chord' ? CHORD_PARAMS.find(p => p.id === pid) : EFFECTS[o.inserts.find(s => s.id === k)?.type]?.params.find(p => p.id === pid);
     const val = () => inp.type === 'checkbox' ? inp.checked : inp.tagName === 'SELECT' ? inp.value : fromPos(pdef, inp.value);
     const apply = () => { const v = val();
-      if (k === 'inst') { if (pid === 'preset') { Object.assign(o.instParams, SYNTH_PRESETS[v], { preset: v }); Object.entries(o.instParams).forEach(([a, b]) => E.setInstParam(o.id, a, b)); renderDevices(); } else E.setInstParam(o.id, pid, v); }
+      if (k === 'arp' || k === 'chord') { o.midifx[k][pid] = v; if (pid === 'on') $('#midiCard').classList.toggle('dim', !(o.midifx.arp.on || o.midifx.chord.on)); }
+      else if (k === 'inst') { if (pid === 'preset') { Object.assign(o.instParams, SYNTH_PRESETS[v], { preset: v }); Object.entries(o.instParams).forEach(([a, b]) => E.setInstParam(o.id, a, b)); renderDevices(); } else E.setInstParam(o.id, pid, v); }
       else E.setFxParam(UI.dev.kind, UI.dev.id, k, pid, v);
       if (inp.nextElementSibling?.tagName === 'OUTPUT') inp.nextElementSibling.textContent = fmt(pdef, v);
       drawEq(); };
     inp.addEventListener('pointerdown', () => snapshot(), { once: false });
     inp.addEventListener('input', apply); inp.addEventListener('change', () => { if (inp.tagName === 'SELECT' || inp.type === 'checkbox') snapshot(); apply(); persist(); if ((k === 'inst' && pid === 'sample') || pdef?.type === 'track') commit(true); });
   });
-  drawEq();
+  drawEq(); fitRack();
+}
+const KEYS = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
+const SCALE = { Major: [0, 2, 4, 5, 7, 9, 11], Minor: [0, 2, 3, 5, 7, 8, 10] };
+function padChords(pd) {
+  const sc = SCALE[pd.scale] || SCALE.Major, root = 48 + KEYS.indexOf(pd.key), roman = pd.scale === 'Minor' ? ['i', 'ii°', 'III', 'iv', 'v', 'VI', 'VII'] : ['I', 'ii', 'iii', 'IV', 'V', 'vi', 'vii°'];
+  return sc.map((_, d) => { const ns = [0, 2, 4, ...(pd.seventh ? [6] : [])].map(k => root + sc[(d + k) % 7] + 12 * Math.floor((d + k) / 7));
+    const q = ns[1] - ns[0] === 3 ? (ns[2] - ns[0] === 6 ? 'dim' : 'm') : ''; return { label: KEYS[(KEYS.indexOf(pd.key) + sc[d]) % 12] + q + (pd.seventh ? '7' : ''), roman: roman[d], notes: ns }; });
+}
+function chordPadsHtml(o) {
+  const pd = (o.pads ||= { key: 'C', scale: 'Major', seventh: false, write: false, len: 2 });
+  return `<div class="dev pads" id="padsCard"><h4><span class="t">Chord pads</span></h4><div class="padbar"><select data-pd="key" aria-label="Key">${KEYS.map(k => `<option ${k === pd.key ? 'selected' : ''}>${k}</option>`).join('')}</select><select data-pd="scale" aria-label="Scale">${Object.keys(SCALE).map(k => `<option ${k === pd.scale ? 'selected' : ''}>${k}</option>`).join('')}</select>
+    <label><input type="checkbox" data-pd="seventh" ${pd.seventh ? 'checked' : ''}> 7ths</label><label title="Clicking a pad also writes the chord into the selected clip at the playhead"><input type="checkbox" data-pd="write" ${pd.write ? 'checked' : ''}> Write to clip</label></div>
+    <div class="padgrid">${padChords(pd).map((c, i) => `<button data-pad="${i}"><b>${c.label}</b><small>${c.roman}</small></button>`).join('')}</div></div>`;
+}
+function bindChordPads(o) {
+  const card = $('#padsCard'); if (!card) return;
+  card.querySelectorAll('[data-pd]').forEach(el => el.onchange = () => { o.pads[el.dataset.pd] = el.type === 'checkbox' ? el.checked : el.value; persist(); renderDevices(); });
+  card.querySelectorAll('[data-pad]').forEach(b => {
+    b.onpointerdown = async e => {
+      const ch = padChords(o.pads)[+b.dataset.pad]; ch.notes.forEach(n => E.liveOn(o.id, n, 0.75));
+      const up = () => { ch.notes.forEach(n => E.liveOff(o.id, n)); removeEventListener('pointerup', up); }; addEventListener('pointerup', up);
+      if (o.pads.write) {
+        const fc = UI.clip && findClip(UI.clip); if (!fc || fc.t !== o || !isMidi(fc.c)) return toast('Select one of this track’s MIDI clips to write chords into it');
+        const tgt = fc.c.pattern ? P().patterns[fc.c.pattern] : fc.c, L = fc.c.pattern ? tgt.len : fc.c.len;
+        let at = Math.floor((E.position() - (fc.c.start || 0)) / P().sig * 2) * P().sig / 2; at = ((at % L) + L) % L; snapshot();
+        ch.notes.forEach(n => tgt.notes.push({ p: n, s: at, l: Math.min(o.pads.len || 2, L - at), v: 0.75 })); commitQuiet(); if (UI.tab === 'editor') renderEditor();
+        toast(`${ch.label} written at beat ${(at + 1).toFixed(1)}`);
+      }
+    };
+  });
+}
+function fitRack() {
+  document.querySelectorAll('#devices .dev .ps').forEach(ps => { const dev = ps.closest('.dev'), avail = dev.clientHeight - ps.offsetTop - 12; ps.style.gridTemplateRows = `repeat(${Math.max(1, Math.floor((avail + 5) / 29))}, 24px)`; });
 }
 function drawEq() {
   document.querySelectorAll('canvas[data-eq]').forEach(cv => {
@@ -563,7 +645,7 @@ function drawEq() {
     for (let i = 0; i < N; i++) fr[i] = 20 * Math.pow(1000, i / (N - 1));
     f.filters.forEach(b => { b.getFrequencyResponse(fr, mag, ph); for (let i = 0; i < N; i++) tot[i] += 20 * Math.log10(Math.max(1e-6, mag[i])); });
     g.strokeStyle = 'rgba(128,128,128,.35)'; g.beginPath(); g.moveTo(0, H / 2); g.lineTo(W, H / 2); [100, 1000, 10000].forEach(hz => { const x = Math.log(hz / 20) / Math.log(1000) * W; g.moveTo(x, 0); g.lineTo(x, H); }); g.stroke();
-    g.strokeStyle = '#ff4f8b'; g.lineWidth = 2; g.beginPath(); for (let i = 0; i < N; i++) { const x = i / (N - 1) * W, y = H / 2 - Math.max(-24, Math.min(24, tot[i])) / 24 * (H / 2 - 4); i ? g.lineTo(x, y) : g.moveTo(x, y); } g.stroke();
+    g.strokeStyle = cssColor('--rose'); g.lineWidth = 2; g.beginPath(); for (let i = 0; i < N; i++) { const x = i / (N - 1) * W, y = H / 2 - Math.max(-24, Math.min(24, tot[i])) / 24 * (H / 2 - 4); i ? g.lineTo(x, y) : g.moveTo(x, y); } g.stroke();
   });
 }
 async function openWamGui(wam) {
@@ -649,13 +731,13 @@ const PRESET_INFO = { 'Supersaw Lead': 'Big EDM lead', 'Pluck': 'Short, bouncy p
 const FX_INFO = { eq: 'Shape the tone', filter: 'Sweeps & wobbles', comp: 'Even out levels, add punch', limiter: 'Make it loud, stop clipping', gate: 'Cut background noise', reverb: 'Room & space', delay: 'Echoes in time', chorus: 'Thicker, wider', flanger: 'Jet-plane swoosh', phaser: 'Swirling movement', tremolo: 'Volume / pan wobble', pump: 'EDM sidechain pump', distortion: 'Grit & warmth', crusher: 'Lo-fi crunch', width: 'Wider stereo', utility: 'Gain, mono, phase' };
 function renderLib() {
   const t = trk(UI.track);
-  $('#lib').innerHTML = `<h5>Instruments</h5>${Object.keys(SYNTH_PRESETS).map(n => `<button data-preset="${esc(n)}">${esc(n)}<small>${PRESET_INFO[n] || ''}</small></button>`).join('')}
-    <button data-addk="drums">Drum kit<small>Step sequencer beat</small></button><button data-addk="sampler">Sampler<small>Play any sound</small></button><button data-addk="external">External MIDI<small>SHRUB / FM-1 / hardware</small></button>
-    <h5>Patterns</h5>${Object.entries(P().patterns || {}).map(([id, pt]) => `<button data-pat="${id}">⧉ ${esc(pt.name)}<small>${pt.len} beats · click to place on ${t && t.kind === 'inst' ? esc(t.name) : 'an instrument track'}</small></button>`).join('')}
-    <button data-newpat="1">+ New pattern<small>Linked clip you can paint across the song</small></button>
-    <h5>Mixing</h5><button data-addk="group">Group bus<small>Mix several tracks together</small></button>
-    <h5>Effects${t ? ' → ' + esc(t.name) : ''}</h5>${Object.entries(EFFECTS).map(([k, d]) => `<button data-fx="${k}">${esc(d.name)}<small>${FX_INFO[k] || d.cat}</small></button>`).join('')}
-    <p class="note">Click an instrument to load it on the selected track (or a new one). Click an effect to add it to the selected track.</p>`;
+  const onT = t && t.kind === 'inst' ? esc(t.name) : 'an instrument track';
+  $('#lib').innerHTML = `<h5>Instruments</h5><div class="chips2">${Object.keys(SYNTH_PRESETS).map(n => `<button data-preset="${esc(n)}" title="${PRESET_INFO[n] || ''}">${esc(n)}</button>`).join('')}
+    <button data-addk="drums" title="Step-sequencer beat">Drum kit</button><button data-addk="sampler" title="Play any sound across the keyboard">Sampler</button><button data-addk="external" class="wide" title="Play SHRUB, an FM-1 or hardware">External MIDI</button></div>
+    <h5>Patterns</h5><div class="chips2">${Object.entries(P().patterns || {}).map(([id, pt]) => `<button data-pat="${id}" title="${pt.len} beats — click to place on ${onT}">⧉ ${esc(pt.name)}</button>`).join('')}<button data-newpat="1" title="A linked clip you can paint across the song">+ New</button></div>
+    <h5>MIDI tools</h5><div class="chips2"><button data-midi="arp" title="Turn held chords into arpeggios">Arpeggiator</button><button data-midi="chord" title="Play full chords from single notes">Chord maker</button><button data-midi="pads" class="wide" title="Click chords in any key">Chord pads</button></div>
+    <h5>Effects${t ? ' → ' + esc(t.name) : ''}</h5><div class="chips2">${Object.entries(EFFECTS).map(([k, d]) => `<button data-fx="${k}" title="${FX_INFO[k] || d.cat}">${esc(d.name.replace(/^(Parametric|Sidechain|Spectrum|Stereo|Tremolo \/) ?/, m => m === 'Parametric ' ? '' : m))}</button>`).join('')}</div>
+    <h5>Mixing</h5><div class="chips2"><button data-addk="group" class="wide" title="Mix several tracks together">Group bus</button></div>`;
 }
 $('#lib').addEventListener('click', async e => {
   const b = e.target.closest('button'); if (!b) return; const t = trk(UI.track);
@@ -663,6 +745,11 @@ $('#lib').addEventListener('click', async e => {
     const pr = b.dataset.preset;
     if (t && t.kind === 'inst' && t.inst === 'synth') { snapshot(); Object.assign(t.instParams, SYNTH_PRESETS[pr], { preset: pr }); Object.entries(t.instParams).forEach(([k, v]) => E.setInstParam(t.id, k, v)); persist(); renderDock(); toast(`${pr} loaded on ${t.name}`); E.liveOn(t.id, 60, 0.8); setTimeout(() => E.liveOff(t.id, 60), 400); }
     else await addTrackOf('synth', { preset: pr });
+  } else if (b.dataset.midi) {
+    if (!t || t.kind !== 'inst') return toast('Select an instrument track first');
+    t.midifx ||= midiDefaults(); if (b.dataset.midi === 'arp') t.midifx.arp.on = true; if (b.dataset.midi === 'chord') t.midifx.chord.on = true;
+    UI.dev = { kind: 'track', id: t.id }; persist(); setTab('devices'); document.getElementById(b.dataset.midi === 'pads' ? 'padsCard' : 'midiCard')?.scrollIntoView({ inline: 'start', block: 'nearest' });
+    toast(b.dataset.midi === 'pads' ? 'Chord pads — click a chord to play it' : b.dataset.midi === 'arp' ? 'Arpeggiator on — hold a chord on your keyboard, or play a clip' : 'Chord maker on — one key now plays a full chord');
   } else if (b.dataset.addk) await addTrackOf(b.dataset.addk);
   else if (b.dataset.pat || b.dataset.newpat) {
     if (!t || t.kind !== 'inst') return toast('Select an instrument or drum track first');
@@ -711,6 +798,10 @@ addEventListener('keydown', e => {
   if (mod) return;
   if (e.code === 'Space') { e.preventDefault(); E.playing ? E.stop(true) : E.play(); return; }
   if (e.key === 'Enter') { E.stop(); return; }
+  if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && UI.clip) {
+    const fc = findClip(UI.clip); if (fc && fc.slot == null) { e.preventDefault(); const step = e.altKey ? 1 / 64 : (UI.snap || 0.25), d = e.key === 'ArrowLeft' ? -step : step;
+      if (!e.repeat) snapshot(); fc.c.start = Math.max(0, +(fc.c.start + d).toFixed(5)); renderLanes(); persist(); toastQuiet(`Nudged to beat ${(fc.c.start + 1).toFixed(3)}`); return; }
+  }
   if (e.key === 'Home') { E.seek(0); return; }
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteClip(); return; }
   const i = KEYMAP.indexOf(k);
@@ -740,7 +831,7 @@ const fbuf = new Float32Array(2048);
 function spectrum(cv, an) {
   const W = cv.clientWidth, H = cv.clientHeight; if (!W) return; if (cv.width !== W * devicePixelRatio) { cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio; }
   const g = cv.getContext('2d'); g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0); g.clearRect(0, 0, W, H);
-  an.getFloatFrequencyData(fbuf); const n = an.frequencyBinCount, sr = E.ctx.sampleRate, acc = getComputedStyle(document.documentElement).getPropertyValue('--rose');
+  an.getFloatFrequencyData(fbuf); const n = an.frequencyBinCount, sr = E.ctx.sampleRate, acc = cssColor('--rose');
   g.strokeStyle = 'rgba(128,128,128,.25)'; g.beginPath(); [100, 1000, 10000].forEach(hz => { const x = Math.log(hz / 20) / Math.log(1000) * W; g.moveTo(x, 0); g.lineTo(x, H); }); g.stroke();
   g.fillStyle = 'rgba(128,128,128,.7)'; g.font = '10px Inter'; [['100', 100], ['1k', 1000], ['10k', 10000]].forEach(([l, hz]) => g.fillText(l, Math.log(hz / 20) / Math.log(1000) * W + 3, H - 4));
   g.beginPath(); for (let x = 0; x <= W; x++) { const hz = 20 * Math.pow(1000, x / W), i = Math.min(n - 1, Math.round(hz / (sr / 2) * n)), v = Math.max(0, Math.min(1, (fbuf[i] + 100) / 80)); const y = H - v * (H - 6); x ? g.lineTo(x, y) : g.moveTo(x, y); }
@@ -770,5 +861,12 @@ function frame() {
   }
   requestAnimationFrame(frame);
 }
-addEventListener('resize', () => { if (E.ctx) { renderLanes(); renderRuler(); } });
+addEventListener('resize', () => { if (E.ctx) { renderLanes(); renderRuler(); if (UI.tab === 'devices') fitRack(); } });
+try { const h = localStorage.getItem('rose:dockH'); if (h) document.documentElement.style.setProperty('--dockH', h); } catch { }
+$('#dockgrip').addEventListener('pointerdown', e => {
+  const g = e.target; g.setPointerCapture(e.pointerId);
+  const mv = ev => { const h = Math.max(150, Math.min(innerHeight - 220, innerHeight - ev.clientY)); document.documentElement.style.setProperty('--dockH', h + 'px'); };
+  const up = () => { g.removeEventListener('pointermove', mv); g.removeEventListener('pointerup', up); try { localStorage.setItem('rose:dockH', getComputedStyle(document.documentElement).getPropertyValue('--dockH')); } catch { } renderLanes(); if (UI.tab === 'devices') fitRack(); };
+  g.addEventListener('pointermove', mv); g.addEventListener('pointerup', up);
+});
 paintTransport();
