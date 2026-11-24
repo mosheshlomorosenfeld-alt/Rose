@@ -11,6 +11,11 @@ export function newTrack(kind, inst, n = 1) {
   return { id: uid(), name: `${names[inst || kind]} ${n}`, kind, inst: kind === 'audio' ? null : inst, instParams: kind === 'audio' ? {} : instDefaults(inst),
     color: COLORS[(n * 3 + (inst || kind).length) % COLORS.length], vol: -6, pan: 0, mute: false, solo: false, arm: false, inserts: [], sends: { A: 0, B: 0 }, clips: [] };
 }
+export function blankProject() {
+  const p = newProject(); p.name = 'Untitled song';
+  p.tracks = [newTrack('inst', 'drums', 1), newTrack('inst', 'synth', 1), newTrack('audio', null, 1)];
+  p.tracks[2].name = 'Vocals'; return p;
+}
 export function newProject() {
   const drums = newTrack('inst', 'drums', 1), lead = newTrack('inst', 'synth', 1), bass = newTrack('inst', 'synth', 2), vox = newTrack('audio', null, 1);
   bass.name = 'Bass'; Object.assign(bass.instParams, { preset: 'Sub Bass', w1: 'sine', w2: 'triangle', semi: 12, mix2: 0.15, uni: 1, spread: 0, cutoff: 900, res: 0.7, fenv: 300, a: 0.004, d: 0.3, s: 0.9, r: 0.12, fd: 0.2, vol: 0.8 });

@@ -1,5 +1,5 @@
 // Rose — UI: arrangement, track headers, piano roll, step sequencer, device rack, mixer, plugins, keyboard & MIDI.
-import { Engine, newTrack, newProject, uid, db } from './engine.js';
+import { Engine, newTrack, newProject, blankProject, uid, db } from './engine.js';
 import { EFFECTS } from './effects.js';
 import { INSTRUMENTS, SYNTH_PRESETS, DRUM_ROWS, instDefaults } from './instruments.js';
 
@@ -45,11 +45,21 @@ async function restore() {
 }
 
 // ---------- startup ----------
-$('#bStart').onclick = async () => {
-  await E.start(); await restore(); await E.rebuild();
-  UI.track = P().tracks[0]?.id; UI.dev = { kind: 'track', id: UI.track };
-  $('#startScreen').remove(); render(); initMIDI(); requestAnimationFrame(frame);
-};
+let saved = null; try { saved = JSON.parse(localStorage.getItem('rose:project') || 'null'); } catch { }
+if (saved?.tracks) { $('#startLabel').textContent = 'Continue your song'; $('#startSub').textContent = saved.name || 'Pick up where you left off'; }
+async function boot(mode) {
+  await E.start(); await restore();
+  if (mode === 'blank') { E.p = blankProject(); E.p.audio = {}; } else if (mode === 'demo' && !saved?.tracks) { E.p = newProject(); E.p.audio = {}; }
+  await E.rebuild(); UI.track = P().tracks[0]?.id; UI.dev = { kind: 'track', id: UI.track };
+  $('#startScreen').remove(); try { UI.lib = localStorage.getItem('rose:lib') !== '0'; } catch { UI.lib = true; }
+  $('#lib').hidden = !UI.lib; renderLib(); render(); initMIDI(); requestAnimationFrame(frame); persist();
+  if (mode === 'open') $('#fOpen').click();
+  let helped = false; try { helped = !!localStorage.getItem('rose:helped'); localStorage.setItem('rose:helped', '1'); } catch { }
+  if (!helped) toast('New here? Press ? for a 1-minute guide');
+}
+$('#bStart').onclick = () => boot('demo');
+$('#bBlank').onclick = () => boot('blank');
+$('#bOpenStart').onclick = () => boot('open');
 
 // ---------- transport ----------
 $('#bPlay').onclick = () => E.playing ? E.stop(true) : E.play();
@@ -64,17 +74,36 @@ $('#songName').onchange = e => { P().name = e.target.value; persist(); };
 $('#zoom').oninput = e => { UI.ppb = +e.target.value; renderLanes(); renderRuler(); };
 $('#snap').onchange = e => UI.snap = +e.target.value;
 function paintTransport() {
-  $('#bPlay').classList.toggle('on', E.playing); $('#bPlay').textContent = E.playing ? '❚❚' : '▶';
+  $('#bPlay').classList.toggle('on', E.playing); $('#bPlay').innerHTML = `<svg><use href="#i-${E.playing ? 'pause' : 'play'}"/></svg>`;
   $('#bRec').classList.toggle('on', E.recording); $('#bLoop').classList.toggle('on', P().loop.on); $('#bMet').classList.toggle('on', P().metronome);
   $('#bpm').value = P().bpm; $('#songName').value = P().name;
 }
 
 // add tracks, import, save/open/new/export
-$('#addTrack').onchange = async e => {
-  const v = e.target.value; e.target.value = ''; if (!v) return; snapshot();
+// ---------- menus: add track, file, library, theme, help ----------
+function popover(btn, pop) {
+  const open = () => { const r = btn.getBoundingClientRect(); pop.hidden = false; pop.style.top = r.bottom + 6 + 'px'; pop.style.left = Math.max(8, Math.min(innerWidth - pop.offsetWidth - 8, r.left)) + 'px'; pop.querySelector('button')?.focus(); };
+  btn.onclick = e => { e.stopPropagation(); pop.hidden ? (closePops(), open()) : closePops(); };
+  pop.addEventListener('click', () => setTimeout(closePops, 0));
+}
+function closePops() { document.querySelectorAll('.pop').forEach(p => p.hidden = true); }
+addEventListener('click', e => { if (!e.target.closest('.pop')) closePops(); });
+popover($('#bAdd'), $('#addPop')); popover($('#bFile'), $('#filePop'));
+$('#addPop').addEventListener('click', e => { const b = e.target.closest('[data-add]'); if (b) addTrackOf(b.dataset.add); });
+$('#bOpenBtn').onclick = () => $('#fOpen').click(); $('#bImportBtn').onclick = () => $('#fImport').click();
+$('#skin').value = document.documentElement.dataset.skin || '';
+$('#skin').onchange = e => { const v = e.target.value; if (v) document.documentElement.dataset.skin = v; else delete document.documentElement.dataset.skin; try { localStorage.setItem('rose:skin', v); } catch { } if (E.ctx) render(); };
+$('#bLib').onclick = () => { UI.lib = !UI.lib; $('#lib').hidden = !UI.lib; try { localStorage.setItem('rose:lib', UI.lib ? '1' : '0'); } catch { } renderLanes(); };
+$('#bHelp').onclick = () => showHelp();
+async function addTrackOf(v, opts = {}) {
+  snapshot();
   const n = P().tracks.filter(t => (t.inst || t.kind) === (v === 'audio' ? 'audio' : v)).length + 1;
-  const t = newTrack(v === 'audio' ? 'audio' : 'inst', v === 'audio' ? null : v, n); P().tracks.push(t); UI.track = t.id; UI.dev = { kind: 'track', id: t.id }; await commit(true);
-};
+  const t = newTrack(v === 'audio' ? 'audio' : 'inst', v === 'audio' ? null : v, n); if (opts.preset) { Object.assign(t.instParams, SYNTH_PRESETS[opts.preset], { preset: opts.preset }); t.name = opts.preset; }
+  if (v === 'drums') t.clips.push({ id: uid(), name: 'Beat', start: Math.floor((P().cursor || 0) / P().sig) * P().sig, len: 4, notes: [] });
+  P().tracks.push(t); UI.track = t.id; UI.dev = { kind: 'track', id: t.id }; UI.clip = t.clips[0]?.id || null; await commit(true);
+  toast(v === 'audio' ? 'Audio track added — arm ● and press Record, or drop a file on it' : v === 'drums' ? 'Drum track added — click the steps below to make a beat' : 'Track added — double-click its lane to draw notes');
+  return t;
+}
 $('#fImport').onchange = async e => { const files = [...e.target.files]; e.target.value = ''; await importFiles(files, null, P().cursor || 0); };
 async function importFiles(files, trackId, beat) {
   let t = trackId && trk(trackId)?.kind === 'audio' ? trk(trackId) : null; snapshot();
@@ -140,7 +169,7 @@ function renderLanes() {
   const n = beatsShown(), w = n * UI.ppb, lp = P().loop;
   $('#lanes').style.width = w + 'px';
   $('#lanes').innerHTML = (lp.on ? `<div class="loopshade" style="left:${lp.start * UI.ppb}px;width:${(lp.end - lp.start) * UI.ppb}px"></div>` : '') +
-    P().tracks.map(t => `<div class="lane" data-id="${t.id}" style="--c:${t.color};background-image:repeating-linear-gradient(90deg,var(--grid) 0 1px,transparent 1px ${UI.ppb}px),repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px ${UI.ppb * P().sig}px)">${t.clips.map(c =>
+    P().tracks.map(t => `<div class="lane" data-id="${t.id}" style="--c:${t.color};background-image:repeating-linear-gradient(90deg,var(--grid) 0 1px,transparent 1px ${UI.ppb}px),repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px ${UI.ppb * P().sig}px)">${t.clips.length ? '' : `<span class="lanehint" style="left:${($('#lanesWrap').scrollLeft || 0) + 14}px">${t.kind === 'audio' ? 'Drop an audio file here, or arm ● and press Record' : 'Double-click here to draw notes · or arm ● and record from your keyboard'}</span>`}${t.clips.map(c =>
       `<div class="clip ${c.id === UI.clip ? 'sel' : ''}" data-clip="${c.id}" style="left:${c.start * UI.ppb}px;width:${Math.max(6, c.len * UI.ppb)}px"><span class="cn">${esc(c.name || (c.notes ? 'MIDI' : audioName(c.sample)))}</span><canvas></canvas><div class="rs"></div></div>`).join('')}</div>`).join('');
   $('#lanes').querySelectorAll('.clip').forEach(el => drawClip(el, findClip(el.dataset.clip)));
   $('#playhead').style.height = Math.max($('#lanesWrap').clientHeight, 56 + P().tracks.length * LANE) + 'px';
@@ -201,6 +230,7 @@ $('#lanes').addEventListener('dblclick', async e => {
 document.querySelector('.tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) setTab(b.dataset.tab); });
 function setTab(t) { UI.tab = t; document.querySelectorAll('.tabs [data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === t)); ['editor', 'devices', 'mixer', 'plugins'].forEach(p => $('#' + p).hidden = p !== t); renderDock(); }
 function renderDock() {
+  if (UI.lib && $('#lib').innerHTML) renderLib();
   const t = trk(UI.track); $('#dockinfo').textContent = t ? `${t.name}${UI.clip ? ' · ' + (findClip(UI.clip)?.c.name || '') : ''}` : '';
   if (UI.tab === 'editor') renderEditor(); else if (UI.tab === 'devices') renderDevices(); else if (UI.tab === 'mixer') renderMixer(); else renderPlugins();
 }
@@ -412,10 +442,10 @@ $('#mixer').addEventListener('click', async e => {
 // ---------- plugins tab ----------
 function renderPlugins() {
   $('#plugins').innerHTML = `<div class="doc">
-  <h3>Built-in devices</h3><p>${Object.keys(EFFECTS).length} effects — ${Object.values(EFFECTS).map(e => e.name).join(', ')} — plus Rose Synth (${Object.keys(SYNTH_PRESETS).length} presets), Rose Drums and Rose Sampler. Add them from the <b>Devices</b> tab. Two return buses (reverb and delay) are fed by each track's A/B sends in the <b>Mixer</b>.</p>
+  <h3>Built-in devices</h3><p>${Object.keys(EFFECTS).length} effects — ${Object.values(EFFECTS).map(e => e.name).join(', ')} — plus Rose Synth (${Object.keys(SYNTH_PRESETS).length} presets), Rose Drums and Rose Sampler. Add them from the <b>Library</b> or the <b>Sound & FX</b> tab. Two return buses (reverb and delay) are fed by each track's A/B sends in the <b>Mixer</b>.</p>
   <h3>VST3 and AU plugins (Serum, FabFilter, Softube Flow, Google Flow Music, Valhalla…)</h3><p>Browsers can't run VST3 or AU plugins — no web DAW can. Use the <b>Rose desktop app</b> in this repo's <code>native/</code> folder: it scans and loads every VST3 and AU plugin on your Mac, including the plugins you use in FL Studio, Logic and Ableton. Stock devices that live inside those apps (FL's Fruity plugins, Logic's ChromaVerb, Ableton's devices) only run inside their own app.</p>
   <h3>SHRUB (Xfer's free Serum for the FM-1)</h3><p><b>Desktop app:</b> install the SHRUB VST3 from shrub.audio, then use <i>Scan plugins</i> in Rose — it loads like any instrument. <b>Browser:</b> add an <b>External MIDI</b> track (+ Track menu) and pick a MIDI output. To play the SHRUB browser editor, turn on the Mac's IAC Driver (Audio MIDI Setup → MIDI Studio → IAC Driver → Device is online), choose it here and as "MIDI in" in the SHRUB editor. An FM-1 running SHRUB shows up directly over USB. Use <b>Export .mid</b> on any MIDI clip to take parts anywhere.</p>
-  <h3>Web plugins (WAM 2)</h3><p>The browser version can load Web Audio Modules — the web's plugin standard. Paste a plugin's <code>index.js</code> address in <b>Devices → Add effect</b>, or below to add it to the selected chain. Web plugins play live but are skipped in WAV export.</p>
+  <h3>Web plugins (WAM 2)</h3><p>The browser version can load Web Audio Modules — the web's plugin standard. Paste a plugin's <code>index.js</code> address in <b>Sound & FX → Add effect</b>, or below to add it to the selected chain. Web plugins play live but are skipped in WAV export.</p>
   <div class="wamrow"><input id="wamUrl2" placeholder="https://…/index.js" aria-label="Web plugin URL"><button id="wamAdd2">Add to ${esc(devOwner()?.name || 'Master')}</button></div>
   <h3>MIDI keyboards</h3><p>${navigator.requestMIDIAccess ? (UI.midiNames?.length ? 'Connected: ' + esc(UI.midiNames.join(', ')) + '. ' : 'No MIDI device found yet — plug one in and it appears automatically. ') + 'Notes play the selected instrument track; arm it (●) and press record to capture them.' : 'This browser has no Web MIDI — use Chrome or Edge for MIDI keyboards.'}</p></div>`;
   $('#wamAdd2').onclick = async () => { const u = $('#wamUrl2').value.trim(); if (!/^https:\/\//.test(u)) return toast('Paste the https:// address of a WAM plugin'); snapshot(); (devOwner() || P().master).inserts.push({ id: uid(), type: 'wam', url: u, params: {}, bypass: false }); await commit(true); setTab('devices'); };
@@ -444,11 +474,51 @@ async function splitClip() {
   fc.t.clips.push(d); await commit(false);
 }
 
+// ---------- library ----------
+const PRESET_INFO = { 'Supersaw Lead': 'Big EDM lead', 'Pluck': 'Short, bouncy pluck', 'Warm Pad': 'Soft chords that swell', 'Sub Bass': 'Deep, clean low end', 'Reese Bass': 'Wide, gritty bass', 'Keys': 'Electric-piano style', 'Chip Square': '8-bit game sound', 'Brass': 'Punchy stabs' };
+const FX_INFO = { eq: 'Shape the tone', filter: 'Sweeps & wobbles', comp: 'Even out levels, add punch', limiter: 'Make it loud, stop clipping', gate: 'Cut background noise', reverb: 'Room & space', delay: 'Echoes in time', chorus: 'Thicker, wider', flanger: 'Jet-plane swoosh', phaser: 'Swirling movement', tremolo: 'Volume / pan wobble', pump: 'EDM sidechain pump', distortion: 'Grit & warmth', crusher: 'Lo-fi crunch', width: 'Wider stereo', utility: 'Gain, mono, phase' };
+function renderLib() {
+  const t = trk(UI.track);
+  $('#lib').innerHTML = `<h5>Instruments</h5>${Object.keys(SYNTH_PRESETS).map(n => `<button data-preset="${esc(n)}">${esc(n)}<small>${PRESET_INFO[n] || ''}</small></button>`).join('')}
+    <button data-addk="drums">Drum kit<small>Step sequencer beat</small></button><button data-addk="sampler">Sampler<small>Play any sound</small></button><button data-addk="external">External MIDI<small>SHRUB / FM-1 / hardware</small></button>
+    <h5>Effects${t ? ' → ' + esc(t.name) : ''}</h5>${Object.entries(EFFECTS).map(([k, d]) => `<button data-fx="${k}">${esc(d.name)}<small>${FX_INFO[k] || d.cat}</small></button>`).join('')}
+    <p class="note">Click an instrument to load it on the selected track (or a new one). Click an effect to add it to the selected track.</p>`;
+}
+$('#lib').addEventListener('click', async e => {
+  const b = e.target.closest('button'); if (!b) return; const t = trk(UI.track);
+  if (b.dataset.preset) {
+    const pr = b.dataset.preset;
+    if (t && t.kind === 'inst' && t.inst === 'synth') { snapshot(); Object.assign(t.instParams, SYNTH_PRESETS[pr], { preset: pr }); Object.entries(t.instParams).forEach(([k, v]) => E.setInstParam(t.id, k, v)); persist(); renderDock(); toast(`${pr} loaded on ${t.name}`); E.liveOn(t.id, 60, 0.8); setTimeout(() => E.liveOff(t.id, 60), 400); }
+    else await addTrackOf('synth', { preset: pr });
+  } else if (b.dataset.addk) await addTrackOf(b.dataset.addk);
+  else if (b.dataset.fx) {
+    const o = t || P().master; snapshot(); o.inserts.push({ id: uid(), type: b.dataset.fx, params: {}, bypass: false });
+    UI.dev = t ? { kind: 'track', id: t.id } : { kind: 'master' }; await commit(true); setTab('devices'); toast(`${EFFECTS[b.dataset.fx].name} added to ${t ? t.name : 'Master'}`);
+  }
+});
+
+// ---------- help ----------
+function showHelp() {
+  if ($('.help')) return $('.help').remove();
+  const d = document.createElement('div'); d.className = 'help'; d.innerHTML = `<div class="card" role="dialog" aria-label="How to use Rose">
+  <h2>Rose in one minute</h2><p style="color:var(--mute);margin:0">Everything starts from <b>Add track</b> and the <b>Library</b>.</p>
+  <div class="cols"><div><h3>Make a beat</h3><ol><li>Add track → <b>Drums</b></li><li>Click the squares in the Editor below — each column is a 16th note</li><li>Shift-click a square for a louder hit</li><li>Press <kbd>Space</kbd> to hear it loop</li></ol>
+  <h3>Play &amp; record notes</h3><ol><li>Pick an instrument in the Library</li><li>Play with your keyboard: <kbd>A</kbd>–<kbd>;</kbd> (<kbd>Z</kbd>/<kbd>X</kbd> change octave) or a MIDI keyboard</li><li>Click ● on the track, then Record (<kbd>R</kbd>)</li><li>Or double-click a lane and click in the piano roll to draw notes</li></ol></div>
+  <div><h3>Record vocals</h3><ol><li>Add track → <b>Audio / vocals</b></li><li>Click ● on it, then Record — allow the microphone</li><li>Stop with <kbd>Space</kbd>; your take appears as a clip</li></ol>
+  <h3>Mix &amp; finish</h3><ol><li><b>Sound &amp; FX</b>: add effects (try Compressor, then Reverb)</li><li><b>Mixer</b>: faders, pan, and A/B sends to the reverb &amp; delay buses</li><li>File → <b>Export WAV</b> to share your song</li></ol></div></div>
+  <h3>Shortcuts</h3><p style="color:var(--mute)"><kbd>Space</kbd> play/pause · <kbd>Enter</kbd> stop · <kbd>R</kbd> record · <kbd>M</kbd> metronome · <kbd>Del</kbd> delete clip · <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate · <kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+<kbd>S</kbd> save · <kbd>?</kbd> this guide</p>
+  <p style="color:var(--mute)">Your song saves itself in this browser. Use File → Save project to keep a copy or move it to another computer. For VST/AU plugins (Serum, SHRUB…) use Rose Desktop — see the Plugins tab.</p>
+  <button class="tb accent" id="helpClose" style="margin-top:8px">Got it</button></div>`;
+  document.body.append(d); d.onclick = e => { if (e.target === d || e.target.id === 'helpClose') d.remove(); }; $('#helpClose').focus();
+}
+
 // ---------- keyboard ----------
 const KEYMAP = 'awsedftgyhujkolp;'; const held = new Set();
 addEventListener('keydown', e => {
   if (!E.ctx || /INPUT|SELECT|TEXTAREA/.test(document.activeElement?.tagName) && !(document.activeElement.type === 'range' || document.activeElement.type === 'checkbox')) return;
   const k = e.key.toLowerCase(), mod = e.ctrlKey || e.metaKey;
+  if (e.key === '?') { showHelp(); return; }
+  if (e.key === 'Escape') { closePops(); $('.help')?.remove(); return; }
   if (mod && k === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (mod && k === 'y') { e.preventDefault(); redo(); return; }
   if (mod && k === 'd') { e.preventDefault(); duplicateClip(); return; }
