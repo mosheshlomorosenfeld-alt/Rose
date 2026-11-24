@@ -1,9 +1,9 @@
 // Rose — UI: arrangement, track headers, piano roll, step sequencer, device rack, mixer, plugins, keyboard & MIDI.
-import { Engine, newTrack, newProject, blankProject, uid, db } from './engine.js';
+import { Engine, newTrack, newProject, blankProject, uid, db, isMidi, upgrade, autoRange, SCENES } from './engine.js';
 import { EFFECTS } from './effects.js';
 import { INSTRUMENTS, SYNTH_PRESETS, DRUM_ROWS, instDefaults } from './instruments.js';
 
-const E = new Engine();
+const E = new Engine(); window.roseEngine = E;
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const UI = { track: null, clip: null, ppb: 44, snap: 0.25, tab: 'editor', dev: { kind: 'track', id: null }, oct: 4, hist: [], fut: [], prGrid: 0.25, prZoom: 1, peaks: new Map(), confirmNew: 0 };
@@ -15,7 +15,7 @@ E.on((type, d) => { if (type === 'error') toast(d); if (type === 'transport') pa
 // ---------- project helpers ----------
 const P = () => E.p;
 const trk = id => P().tracks.find(t => t.id === id);
-const findClip = id => { for (const t of P().tracks) { const c = t.clips.find(c => c.id === id); if (c) return { t, c }; } return null; };
+const findClip = id => { if (!id) return null; for (const t of P().tracks) { const c = t.clips.find(c => c.id === id); if (c) return { t, c }; const sl = P().session?.slots?.[t.id]; const i = sl ? sl.findIndex(c => c && c.id === id) : -1; if (i >= 0) return { t, c: sl[i], slot: i }; } return null; };
 const snapB = b => UI.snap ? Math.round(b / UI.snap) * UI.snap : b;
 const audioName = id => P().audio?.[id]?.name || 'Audio';
 function snapshot() { UI.hist.push(JSON.stringify(P())); if (UI.hist.length > 120) UI.hist.shift(); UI.fut = []; }
@@ -38,7 +38,7 @@ async function restore() {
   idb = await openDB(); let p = null;
   try { p = JSON.parse(localStorage.getItem('rose:project') || 'null'); } catch { }
   if (p?.tracks) {
-    E.p = p; const keys = await idbDo('readonly', st => st.getAllKeys()) || [];
+    E.p = upgrade(p); const keys = await idbDo('readonly', st => st.getAllKeys()) || [];
     for (const id of keys) { const ab = await idbDo('readonly', st => st.get(id)); if (!ab) continue; try { E.buffers.set(id, await E.ctx.decodeAudioData(ab.slice(0))); E.raw.set(id, ab); (persist.saved ||= new Set()).add(id); } catch { } }
   }
   E.p.audio ||= {};
@@ -86,7 +86,7 @@ function popover(btn, pop) {
   btn.onclick = e => { e.stopPropagation(); pop.hidden ? (closePops(), open()) : closePops(); };
   pop.addEventListener('click', () => setTimeout(closePops, 0));
 }
-function closePops() { document.querySelectorAll('.pop').forEach(p => p.hidden = true); }
+function closePops() { document.querySelectorAll('.pop:not(#ctxPop)').forEach(p => p.hidden = true); }
 addEventListener('click', e => { if (!e.target.closest('.pop')) closePops(); });
 popover($('#bAdd'), $('#addPop')); popover($('#bFile'), $('#filePop'));
 $('#addPop').addEventListener('click', e => { const b = e.target.closest('[data-add]'); if (b) addTrackOf(b.dataset.add); });
@@ -98,10 +98,10 @@ $('#bHelp').onclick = () => showHelp();
 async function addTrackOf(v, opts = {}) {
   snapshot();
   const n = P().tracks.filter(t => (t.inst || t.kind) === (v === 'audio' ? 'audio' : v)).length + 1;
-  const t = newTrack(v === 'audio' ? 'audio' : 'inst', v === 'audio' ? null : v, n); if (opts.preset) { Object.assign(t.instParams, SYNTH_PRESETS[opts.preset], { preset: opts.preset }); t.name = opts.preset; }
+  const t = newTrack(v === 'audio' ? 'audio' : v === 'group' ? 'group' : 'inst', v === 'audio' || v === 'group' ? null : v, n); if (opts.preset) { Object.assign(t.instParams, SYNTH_PRESETS[opts.preset], { preset: opts.preset }); t.name = opts.preset; }
   if (v === 'drums') t.clips.push({ id: uid(), name: 'Beat', start: Math.floor((P().cursor || 0) / P().sig) * P().sig, len: 4, notes: [] });
   P().tracks.push(t); UI.track = t.id; UI.dev = { kind: 'track', id: t.id }; UI.clip = t.clips[0]?.id || null; await commit(true);
-  toast(v === 'audio' ? 'Audio track added — arm ● and press Record, or drop a file on it' : v === 'drums' ? 'Drum track added — click the steps below to make a beat' : 'Track added — double-click its lane to draw notes');
+  toast(v === 'group' ? 'Group bus added — in the Mixer, set other tracks’ Out to it' : v === 'audio' ? 'Audio track added — arm ● and press Record, or drop a file on it' : v === 'drums' ? 'Drum track added — click the steps below to make a beat' : 'Track added — double-click its lane to draw notes');
   return t;
 }
 $('#fImport').onchange = async e => { const files = [...e.target.files]; e.target.value = ''; await importFiles(files, null, P().cursor || 0); };
@@ -134,30 +134,105 @@ function render() { paintTransport(); renderHeads(); renderRuler(); renderLanes(
 function beatsShown() { return Math.max(E.songEnd() + 16, P().loop.end + 8, 64, Math.ceil(($('#lanesWrap').clientWidth || 800) / UI.ppb) + 4); }
 
 function renderHeads() {
-  $('#hlist').innerHTML = P().tracks.map(t => `<div class="th ${t.id === UI.track ? 'sel' : ''}" data-id="${t.id}" style="--c:${t.color}">
+  $('#hlist').innerHTML = P().tracks.map(t => {
+    const grp = t.kind === 'group', members = grp ? P().tracks.filter(x => x.out === t.id).length : 0;
+    const kind = grp ? `Group bus · ${members} track${members === 1 ? '' : 's'}` : t.kind === 'audio' ? 'Audio' : esc(INSTRUMENTS[t.inst]?.name);
+    const outTo = !grp && t.out !== 'master' ? ' → ' + esc(trk(t.out)?.name || '') : '';
+    const autoSel = t.autoShow ? `<select class="autosel" aria-label="Automation parameter">${autoTargets(t).map(([v, l]) => `<option value="${v}" ${v === t.autoShow ? 'selected' : ''}>${esc(l)}${t.auto.some(a => a.target === v && a.points.length) ? ' •' : ''}</option>`).join('')}</select>` : '';
+    return `<div class="th ${t.id === UI.track ? 'sel' : ''}" data-id="${t.id}" style="--c:${t.color}">
     <div class="cs"></div><div class="body">
-      <div class="row"><input class="name" value="${esc(t.name)}" aria-label="Track name"><button class="sm" data-act="del" title="Delete track">×</button></div>
-      <div class="row"><button class="sm m ${t.mute ? 'on' : ''}" data-act="mute" title="Mute">M</button><button class="sm s ${t.solo ? 'on' : ''}" data-act="solo" title="Solo">S</button><button class="sm a ${t.arm ? 'on' : ''}" data-act="arm" title="Arm for recording">●</button>
+      <div class="row"><input class="name" value="${esc(t.name)}" aria-label="Track name"><button class="sm" data-act="menu" title="Track options" aria-label="Track options">⋯</button></div>
+      <div class="row"><button class="sm m ${t.mute ? 'on' : ''}" data-act="mute" title="Mute">M</button><button class="sm s ${t.solo ? 'on' : ''}" data-act="solo" title="Solo">S</button>${grp ? '' : `<button class="sm a ${t.arm ? 'on' : ''}" data-act="arm" title="Arm for recording">●</button>`}<button class="sm au ${t.autoShow ? 'on' : ''} ${t.auto?.some(a => a.points.length) ? 'has' : ''}" data-act="auto" title="Show automation (draw volume, pan and effect changes over time)">A</button>
       <input class="vol" type="range" min="-60" max="6" step="0.5" value="${t.vol}" aria-label="Volume" title="${t.vol} dB"></div>
-      <div class="kind">${t.kind === 'audio' ? 'Audio' : esc(INSTRUMENTS[t.inst]?.name)}${t.inserts.length ? ' · ' + t.inserts.length + ' fx' : ''}</div></div></div>`).join('');
+      ${autoSel || `<div class="kind">${kind}${t.inserts.length ? ' · ' + t.inserts.length + ' fx' : ''}${outTo}</div>`}</div></div>`;
+  }).join('');
+}
+function autoTargets(t) {
+  const list = [['vol', 'Volume'], ['pan', 'Pan'], ...P().returns.map(r => ['send:' + r.id, 'Send ' + r.id + ' (' + r.name + ')'])];
+  for (const s of t.inserts) { const d = EFFECTS[s.type]; if (!d) continue; for (const p of d.params) if (p.type === 'range') list.push([`fx:${s.id}:${p.id}`, `${d.name}: ${p.label}`]); }
+  return list;
 }
 $('#hlist').addEventListener('click', async e => {
   const h = e.target.closest('.th'); if (!h) return; const t = trk(h.dataset.id), act = e.target.dataset.act;
-  if (act === 'del') { snapshot(); P().tracks = P().tracks.filter(x => x !== t); if (UI.track === t.id) UI.track = P().tracks[0]?.id; await commit(true); return; }
+  if (act === 'menu') { trackMenu(t, e.target); return; }
+  if (act === 'auto') { t.autoShow = t.autoShow ? null : (t.auto.find(a => a.points.length)?.target || 'vol'); persist(); renderHeads(); renderLanes(); return; }
   if (act) { snapshot(); t[act] = !t[act]; if (act === 'arm' && t.arm && t.kind === 'audio') P().tracks.forEach(x => { if (x !== t && x.kind === 'audio') x.arm = false; }); await commit(false); return; }
-  if (e.target.tagName !== 'INPUT') { UI.track = t.id; UI.dev = { kind: 'track', id: t.id }; renderHeads(); renderDock(); }
+  if (!/INPUT|SELECT/.test(e.target.tagName)) { UI.track = t.id; UI.dev = { kind: 'track', id: t.id }; renderHeads(); renderDock(); }
 });
 $('#hlist').addEventListener('input', e => { const h = e.target.closest('.th'); if (!h || !e.target.classList.contains('vol')) return; trk(h.dataset.id).vol = +e.target.value; E.applyMix(); });
-$('#hlist').addEventListener('change', e => { const h = e.target.closest('.th'); if (!h) return; const t = trk(h.dataset.id); if (e.target.classList.contains('name')) { snapshot(); t.name = e.target.value; } persist(); renderDock(); });
+$('#hlist').addEventListener('change', e => {
+  const h = e.target.closest('.th'); if (!h) return; const t = trk(h.dataset.id);
+  if (e.target.classList.contains('name')) { snapshot(); t.name = e.target.value; }
+  if (e.target.classList.contains('autosel')) { t.autoShow = e.target.value; renderLanes(); }
+  persist(); renderDock();
+});
 $('#lanesWrap').addEventListener('scroll', () => { $('#hlist').scrollTop = $('#lanesWrap').scrollTop; });
 
+// ---------- track menu ----------
+function menuAt(anchor, items) {
+  closePops(); $('#ctxPop')?.remove(); const m = document.createElement('div'); m.className = 'pop'; m.id = 'ctxPop';
+  m.innerHTML = items.map((it, i) => `<button data-i="${i}" ${it.disabled ? 'disabled' : ''}><span class="ic">${it.icon || ''}</span><b>${esc(it.label)}</b>${it.sub ? `<small>${esc(it.sub)}</small>` : ''}</button>`).join('');
+  document.body.append(m); const r = anchor.getBoundingClientRect(); m.style.top = Math.min(innerHeight - m.offsetHeight - 8, r.bottom + 4) + 'px'; m.style.left = Math.min(innerWidth - m.offsetWidth - 8, r.left) + 'px';
+  m.onclick = e => { const b = e.target.closest('[data-i]'); if (b) { m.remove(); items[+b.dataset.i].run(); } }; m.querySelector('button')?.focus();
+  setTimeout(() => addEventListener('click', function off(ev) { if (!m.contains(ev.target)) { m.remove(); removeEventListener('click', off); } }), 0);
+}
+function trackMenu(t, anchor) {
+  const i = P().tracks.indexOf(t);
+  menuAt(anchor, [
+    { icon: '⇩', label: 'Bounce to audio', sub: 'Render this track with its effects to a new audio track', run: () => bounceInPlace(t) },
+    { icon: '⧉', label: 'Duplicate track', sub: 'Copy clips, sound and effects', run: () => duplicateTrack(t) },
+    { icon: '●', label: 'Change colour', run: async () => { snapshot(); const C = ['#ff4f8b', '#ffb020', '#22c55e', '#3b82f6', '#a855f7', '#14b8a6', '#f43f5e', '#eab308', '#06b6d4', '#f97316']; t.color = C[(C.indexOf(t.color) + 1) % C.length]; await commit(false); } },
+    { icon: '↑', label: 'Move up', disabled: i === 0, run: async () => { snapshot(); [P().tracks[i - 1], P().tracks[i]] = [P().tracks[i], P().tracks[i - 1]]; await commit(false); } },
+    { icon: '↓', label: 'Move down', disabled: i === P().tracks.length - 1, run: async () => { snapshot(); [P().tracks[i + 1], P().tracks[i]] = [P().tracks[i], P().tracks[i + 1]]; await commit(false); } },
+    { icon: '×', label: 'Delete track', sub: 'You can undo', run: async () => { snapshot(); P().tracks = P().tracks.filter(x => x !== t); P().tracks.forEach(x => { if (x.out === t.id) x.out = 'master'; }); if (UI.track === t.id) UI.track = P().tracks[0]?.id; await commit(true); } }
+  ]);
+}
+async function duplicateTrack(t) {
+  snapshot(); const c = JSON.parse(JSON.stringify(t)); c.id = uid(); c.name = t.name + ' copy'; c.arm = false; c.solo = false;
+  const map = {}; c.inserts.forEach(s => { const n = uid(); map[s.id] = n; s.id = n; }); c.clips.forEach(x => x.id = uid());
+  c.auto = (c.auto || []).map(a => ({ ...a, id: uid(), target: a.target.replace(/^fx:([^:]+)/, (m, id) => 'fx:' + (map[id] || id)) }));
+  if (c.autoShow) c.autoShow = c.autoShow.replace(/^fx:([^:]+)/, (m, id) => 'fx:' + (map[id] || id));
+  P().tracks.splice(P().tracks.indexOf(t) + 1, 0, c); UI.track = c.id; await commit(true); toast('Track duplicated');
+}
+async function bounceInPlace(t) {
+  if (t.kind === 'audio' && !t.inserts.length && !t.auto.length) return toast('This audio track has no effects to print — nothing to bounce');
+  toast('Bouncing ' + t.name + '…'); E.stop(true);
+  try {
+    const r = await E.bounceTrack(t.id); if (!r) return toast('Bounce failed');
+    snapshot(); P().audio[r.id] = { name: t.name + ' (bounced)' };
+    const a = newTrack('audio', null, 1); a.name = t.name + ' (audio)'; a.color = t.color; a.vol = t.vol; a.pan = t.pan; a.sends = { ...t.sends }; a.out = t.kind === 'group' ? 'master' : t.out;
+    a.clips.push({ id: uid(), name: t.name, start: 0, len: r.buf.duration / E.spb, sample: r.id, offset: 0, gain: 0 });
+    t.mute = true; P().tracks.splice(P().tracks.indexOf(t) + 1, 0, a); UI.track = a.id; await commit(true); toast(`Bounced — ${t.name} is muted, the new audio track plays instead`);
+  } catch (e) { toast('Bounce failed: ' + e.message); }
+}
+
+// ---------- arrangement / session switch ----------
+UI.view = 'arrange';
+function setView(v) {
+  UI.view = v; $('#vArr').classList.toggle('on', v === 'arrange'); $('#vSes').classList.toggle('on', v === 'session');
+  document.body.classList.toggle('session', v === 'session'); renderRuler(); renderLanes();
+}
+$('#vArr').onclick = () => setView('arrange'); $('#vSes').onclick = () => setView('session');
+
 function renderRuler() {
+  const r = $('#ruler');
+  if (UI.view === 'session') {
+    r.style.width = 'auto';
+    r.innerHTML = `<div class="scn"><button class="sstop" id="stopAll" title="Stop all clips">■</button>${[...Array(SCENES)].map((_, i) => `<button class="sbtn" data-scene="${i}" title="Launch every clip in scene ${i + 1}"><svg width="12" height="12"><use href="#i-play"/></svg> Scene ${i + 1}</button>`).join('')}</div>`;
+    return;
+  }
   const n = beatsShown(), sig = P().sig, lp = P().loop; let h = '';
   for (let b = 0; b < n; b += sig) h += `<div class="bar" style="left:${b * UI.ppb}px">${b / sig + 1}</div>`;
   h += `<div class="loopr ${lp.on ? '' : 'off'}" style="left:${lp.start * UI.ppb}px;width:${(lp.end - lp.start) * UI.ppb}px" title="Loop — drag here to set, click Loop to toggle"></div>`;
-  const r = $('#ruler'); r.style.width = n * UI.ppb + 'px'; r.innerHTML = h;
+  r.style.width = n * UI.ppb + 'px'; r.innerHTML = h;
 }
+$('#ruler').addEventListener('click', e => {
+  if (UI.view !== 'session') return;
+  const s = e.target.closest('[data-scene]'); if (s) E.launchScene(+s.dataset.scene);
+  if (e.target.closest('#stopAll')) E.stopAllClips();
+});
 $('#ruler').addEventListener('pointerdown', e => {
+  if (UI.view === 'session') return;
   const r = $('#ruler').getBoundingClientRect(), x0 = e.clientX - r.left, b0 = snapB(x0 / UI.ppb);
   if (e.clientY - r.top > 28) { E.seek(Math.max(0, x0 / UI.ppb)); return; }
   const lp = P().loop; const move = ev => { const b = snapB((ev.clientX - r.left) / UI.ppb); lp.start = Math.max(0, Math.min(b0, b)); lp.end = Math.max(b0, b, lp.start + (UI.snap || 0.25)); lp.on = true; renderRuler(); paintTransport(); };
@@ -165,35 +240,82 @@ $('#ruler').addEventListener('pointerdown', e => {
   addEventListener('pointermove', move); addEventListener('pointerup', up);
 });
 
+const clipName = c => c.pattern ? '⧉ ' + (P().patterns[c.pattern]?.name || c.name) : (c.name || (isMidi(c) ? 'MIDI' : audioName(c.sample)));
 function renderLanes() {
-  const n = beatsShown(), w = n * UI.ppb, lp = P().loop;
+  if (UI.view === 'session') return renderSession();
+  const n = beatsShown(), w = n * UI.ppb, lp = P().loop, sl = ($('#lanesWrap').scrollLeft || 0) + 14;
   $('#lanes').style.width = w + 'px';
   $('#lanes').innerHTML = (lp.on ? `<div class="loopshade" style="left:${lp.start * UI.ppb}px;width:${(lp.end - lp.start) * UI.ppb}px"></div>` : '') +
-    P().tracks.map(t => `<div class="lane" data-id="${t.id}" style="--c:${t.color};background-image:repeating-linear-gradient(90deg,var(--grid) 0 1px,transparent 1px ${UI.ppb}px),repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px ${UI.ppb * P().sig}px)">${t.clips.length ? '' : `<span class="lanehint" style="left:${($('#lanesWrap').scrollLeft || 0) + 14}px">${t.kind === 'audio' ? 'Drop an audio file here, or arm ● and press Record' : 'Double-click here to draw notes · or arm ● and record from your keyboard'}</span>`}${t.clips.map(c =>
-      `<div class="clip ${c.id === UI.clip ? 'sel' : ''}" data-clip="${c.id}" style="left:${c.start * UI.ppb}px;width:${Math.max(6, c.len * UI.ppb)}px"><span class="cn">${esc(c.name || (c.notes ? 'MIDI' : audioName(c.sample)))}</span><canvas></canvas><div class="rs"></div></div>`).join('')}</div>`).join('');
+    P().tracks.map(t => {
+      const hint = t.kind === 'group' ? 'Group bus — in the Mixer, set other tracks’ Out to this group' : t.clips.length ? '' : t.kind === 'audio' ? 'Drop an audio file here, or arm ● and press Record' : 'Double-click here to draw notes · or arm ● and record from your keyboard';
+      return `<div class="lane ${t.autoShow ? 'autoon' : ''}" data-id="${t.id}" style="--c:${t.color};background-image:repeating-linear-gradient(90deg,var(--grid) 0 1px,transparent 1px ${UI.ppb}px),repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px ${UI.ppb * P().sig}px)">${hint && !t.autoShow ? `<span class="lanehint" style="left:${sl}px">${hint}</span>` : ''}${t.clips.map(c =>
+      `<div class="clip ${c.id === UI.clip ? 'sel' : ''} ${c.pattern ? 'pat' : ''}" data-clip="${c.id}" style="left:${c.start * UI.ppb}px;width:${Math.max(6, c.len * UI.ppb)}px"><span class="cn">${esc(clipName(c))}</span><canvas></canvas><div class="rs"></div></div>`).join('')}${t.autoShow ? autoSvg(t, w) : ''}</div>`;
+    }).join('');
   $('#lanes').querySelectorAll('.clip').forEach(el => drawClip(el, findClip(el.dataset.clip)));
   $('#playhead').style.height = Math.max($('#lanesWrap').clientHeight, 56 + P().tracks.length * LANE) + 'px';
 }
-function markSel() { document.querySelectorAll('#lanes .clip').forEach(c => c.classList.toggle('sel', c.dataset.clip === UI.clip)); }
-function peaksFor(id) {
-  if (UI.peaks.has(id)) return UI.peaks.get(id); const b = E.buffers.get(id); if (!b) return null;
-  const d = b.getChannelData(0), d2 = b.numberOfChannels > 1 ? b.getChannelData(1) : d, step = 256, pk = new Float32Array(Math.ceil(d.length / step));
-  for (let i = 0; i < pk.length; i++) { let m = 0; for (let j = i * step, e = Math.min(d.length, j + step); j < e; j++) m = Math.max(m, Math.abs(d[j]), Math.abs(d2[j])); pk[i] = m; }
-  UI.peaks.set(id, pk); return pk;
+// ---------- automation lane ----------
+const AH = LANE - 2;
+function aNorm(rg, v) { return rg.log ? Math.log(v / rg.min) / Math.log(rg.max / rg.min) : (v - rg.min) / (rg.max - rg.min); }
+function aDenorm(rg, f) { f = Math.max(0, Math.min(1, f)); const v = rg.log ? rg.min * Math.pow(rg.max / rg.min, f) : rg.min + f * (rg.max - rg.min); return +v.toFixed(3); }
+function autoSvg(t, w) {
+  const rg = autoRange(t, t.autoShow); if (!rg) return '';
+  const lane = t.auto.find(a => a.target === t.autoShow), y = v => 6 + (1 - aNorm(rg, v)) * (AH - 12);
+  const pts = lane?.points || []; const cur = t.autoShow === 'vol' ? t.vol : t.autoShow === 'pan' ? t.pan : null;
+  const path = pts.length ? `M0 ${y(pts[0].v)} ` + pts.map(p => `L${p.b * UI.ppb} ${y(p.v)}`).join(' ') + ` L${w} ${y(pts[pts.length - 1].v)}` : (cur != null ? `M0 ${y(cur)} L${w} ${y(cur)}` : '');
+  return `<svg class="auto" data-id="${t.id}" width="${w}" height="${AH}" aria-label="${esc(rg.label)} automation"><text x="${($('#lanesWrap').scrollLeft || 0) + 8}" y="14">${esc(rg.label)} — click to add a point, drag to move, double-click to remove</text><path d="${path}" class="${pts.length ? '' : 'flat'}"/>${pts.map((p, i) => `<circle cx="${p.b * UI.ppb}" cy="${y(p.v)}" r="5" data-pt="${i}"><title>${fmtAuto(rg, p.v)} at beat ${(p.b + 1).toFixed(2)}</title></circle>`).join('')}</svg>`;
 }
-function drawClip(el, fc) {
-  if (!fc) return; const { t, c } = fc, cv = el.querySelector('canvas'), W = Math.max(1, el.clientWidth), H = 44, dpr = devicePixelRatio || 1;
-  cv.width = W * dpr; cv.height = H * dpr; const g = cv.getContext('2d'); g.scale(dpr, dpr); g.fillStyle = t.color;
-  if (c.notes) {
-    if (!c.notes.length) return; const ps = c.notes.map(n => n.p), lo = Math.min(...ps) - 1, hi = Math.max(...ps) + 1, rh = Math.max(2, Math.min(6, H / (hi - lo + 1)));
-    for (const n of c.notes) if (n.s < c.len) g.fillRect(n.s / c.len * W, H - (n.p - lo + 1) * (H - rh) / (hi - lo + 1) - rh, Math.max(2, n.l / c.len * W - 1), rh);
-  } else {
-    const pk = peaksFor(c.sample), b = E.buffers.get(c.sample); if (!pk) return; const sr = b.sampleRate / 256, mid = H / 2;
-    for (let x = 0; x < W; x++) { const sec = (c.offset || 0) + x / W * c.len * E.spb, i = Math.floor(sec * sr); if (i >= pk.length) break; const a = pk[i] * mid * db(c.gain || 0); g.fillRect(x, mid - a, 1, Math.max(1, a * 2)); }
-  }
+const fmtAuto = (rg, v) => rg.unit === 'Hz' ? Math.round(v) + ' Hz' : rg.unit === 'dB' ? v.toFixed(1) + ' dB' : rg.label === 'Pan' ? (v === 0 ? 'C' : v < 0 ? Math.round(-v * 100) + 'L' : Math.round(v * 100) + 'R') : (+v).toFixed(2) + (rg.unit ? ' ' + rg.unit : '');
+function autoPointer(e, svg) {
+  const t = trk(svg.dataset.id), rg = autoRange(t, t.autoShow); if (!rg) return;
+  let lane = t.auto.find(a => a.target === t.autoShow); const r = svg.getBoundingClientRect();
+  const at = ev => ({ b: Math.max(0, snapB((ev.clientX - r.left) / UI.ppb)), v: aDenorm(rg, 1 - ((ev.clientY - r.top) - 6) / (AH - 12)) });
+  snapshot();
+  if (!lane) { lane = { id: uid(), target: t.autoShow, points: [] }; t.auto.push(lane); }
+  let pt = e.target.dataset.pt != null ? lane.points[+e.target.dataset.pt] : null;
+  if (!pt) { pt = at(e); lane.points.push(pt); lane.points.sort((a, b) => a.b - b.b); }
+  svg.setPointerCapture(e.pointerId);
+  const mv = ev => { Object.assign(pt, at(ev)); lane.points.sort((a, b) => a.b - b.b); renderLanes(); toastQuiet(`${rg.label}: ${fmtAuto(rg, pt.v)}`); };
+  const up = () => { svg.removeEventListener('pointermove', mv); svg.removeEventListener('pointerup', up); renderLanes(); renderHeads(); persist(); };
+  svg.addEventListener('pointermove', mv); svg.addEventListener('pointerup', up); renderLanes();
 }
-// clip drag / resize / create / drop
+function toastQuiet(m) { const t = $('#toast'); t.textContent = m; t.classList.add('on'); clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 900); }
+function autoDelete(e, svg) {
+  const t = trk(svg.dataset.id), lane = t.auto.find(a => a.target === t.autoShow), i = e.target.dataset.pt; if (!lane || i == null) return;
+  snapshot(); lane.points.splice(+i, 1); if (!lane.points.length) t.auto = t.auto.filter(a => a !== lane); renderLanes(); renderHeads(); persist();
+}
+// ---------- session view (clip launcher) ----------
+function renderSession() {
+  $('#lanes').style.width = 'auto';
+  $('#lanes').innerHTML = P().tracks.map(t => {
+    if (t.kind === 'group') return `<div class="srow grp" data-id="${t.id}" style="--c:${t.color}"><span class="lanehint" style="left:14px">Group bus</span></div>`;
+    const slots = E.slots(t.id), live = E.live[t.id], q = E.queued[t.id];
+    return `<div class="srow" data-id="${t.id}" style="--c:${t.color}"><button class="sstop" data-stop="${t.id}" title="Stop this track">■</button>${slots.map((c, i) => c
+      ? `<div class="slot full ${live?.slot === i && live.clip === c ? 'live' : ''} ${q?.slot === i ? 'queued' : ''} ${c.id === UI.clip ? 'sel' : ''}" data-slot="${i}" data-clip="${c.id}"><button class="go" data-launch="${i}" aria-label="Launch ${esc(clipName(c))}"><svg width="12" height="12"><use href="#i-play"/></svg></button><span>${esc(clipName(c))}</span><i class="prog"></i></div>`
+      : `<div class="slot ${q?.slot === -1 && i === 0 ? '' : ''}" data-slot="${i}" title="${t.kind === 'audio' ? 'Drop an audio file here' : 'Double-click to make a clip'}"></div>`).join('')}</div>`;
+  }).join('');
+  $('#playhead').style.height = '0px';
+}
+E.on(type => { if (type === 'session' && UI.view === 'session') renderSession(); });
+$('#lanes').addEventListener('click', async e => {
+  if (UI.view !== 'session') return;
+  const row = e.target.closest('.srow'); if (!row) return; const t = trk(row.dataset.id);
+  if (e.target.closest('[data-stop]')) { E.stopTrack(t.id); return; }
+  const go = e.target.closest('[data-launch]'); if (go) { E.launch(t.id, +go.dataset.launch); return; }
+  const slot = e.target.closest('.slot'); UI.track = t.id; UI.dev = { kind: 'track', id: t.id };
+  UI.clip = slot?.dataset.clip || null; document.querySelectorAll('#lanes .slot').forEach(x => x.classList.toggle('sel', !!UI.clip && x.dataset.clip === UI.clip)); renderHeads(); if (UI.clip) setTab('editor'); else renderDock();
+});
+$('#lanes').addEventListener('dblclick', async e => {
+  if (UI.view !== 'session') return;
+  const row = e.target.closest('.srow'), slot = e.target.closest('.slot:not(.full)'); if (!row || !slot) return; const t = trk(row.dataset.id);
+  if (t.kind !== 'inst') return toast('Drop an audio file on this slot');
+  snapshot(); const c = { id: uid(), name: t.name + ' ' + (+slot.dataset.slot + 1), start: 0, len: P().sig, notes: [] }; E.slots(t.id)[+slot.dataset.slot] = c;
+  UI.clip = c.id; UI.track = t.id; await commit(false); setTab('editor');
+});
+
 $('#lanes').addEventListener('pointerdown', e => {
+  if (UI.view === 'session') return;
+  const svg = e.target.closest('svg.auto'); if (svg) { if (e.detail < 2) autoPointer(e, svg); return; }
   const el = e.target.closest('.clip'), lane = e.target.closest('.lane'); if (!lane) return;
   if (!el) { UI.clip = null; UI.track = lane.dataset.id; UI.dev = { kind: 'track', id: UI.track }; markSel(); renderHeads(); renderDock(); return; }
   const fc = findClip(el.dataset.clip); UI.clip = fc.c.id; UI.track = fc.t.id; UI.dev = { kind: 'track', id: fc.t.id };
@@ -206,7 +328,7 @@ $('#lanes').addEventListener('pointerdown', e => {
     else {
       fc.c.start = Math.max(0, snapB(s0 + db_));
       const r = $('#lanes').getBoundingClientRect(), idx = Math.floor((ev.clientY - r.top) / LANE), dest = P().tracks[idx];
-      if (dest && dest !== src && (dest.kind === 'audio') === !fc.c.notes) { src.clips = src.clips.filter(c => c !== fc.c); dest.clips.push(fc.c); src = dest; fc.t = dest; UI.track = dest.id; }
+      if (dest && dest !== src && dest.kind !== 'group' && (dest.kind === 'audio') === !isMidi(fc.c)) { src.clips = src.clips.filter(c => c !== fc.c); dest.clips.push(fc.c); src = dest; fc.t = dest; UI.track = dest.id; }
     }
     renderLanes();
   };
@@ -214,18 +336,46 @@ $('#lanes').addEventListener('pointerdown', e => {
   el.addEventListener('pointermove', move); el.addEventListener('pointerup', up);
 });
 $('#lanes').addEventListener('dblclick', async e => {
+  if (UI.view === 'session') return;
+  const svg = e.target.closest('svg.auto'); if (svg) { autoDelete(e, svg); return; }
   const el = e.target.closest('.clip'), lane = e.target.closest('.lane'); if (!lane) return;
   if (el) { setTab('editor'); return; }
-  const t = trk(lane.dataset.id); if (t.kind !== 'inst') return toast('Drop audio files here, or record into this track');
+  const t = trk(lane.dataset.id); if (t.kind === 'group') return; if (t.kind !== 'inst') return toast('Drop audio files here, or record into this track');
   const r = lane.getBoundingClientRect(), b = Math.floor((e.clientX - r.left) / UI.ppb / P().sig) * P().sig; snapshot();
   const c = { id: uid(), name: t.name, start: b, len: P().sig, notes: [] }; t.clips.push(c); UI.clip = c.id; UI.track = t.id; await commit(false); setTab('editor');
 });
 ['dragover', 'drop'].forEach(ev => $('#lanesWrap').addEventListener(ev, async e => {
   e.preventDefault(); if (ev === 'dragover') return; const files = [...(e.dataTransfer?.files || [])]; if (!files.length) return;
+  if (UI.view === 'session') {
+    const row = e.target.closest('.srow'), slot = e.target.closest('.slot'), t = row && trk(row.dataset.id); if (!t || !slot || t.kind !== 'audio') return toast('Drop audio onto an audio track slot');
+    const f = files[0], id = await E.addAudio(await f.arrayBuffer(), f.name); if (!id) return; snapshot(); P().audio[id] = { name: f.name.replace(/\.[^.]+$/, '') };
+    E.slots(t.id)[+slot.dataset.slot] = { id: uid(), name: P().audio[id].name, start: 0, len: Math.max(1, Math.round(E.buffers.get(id).duration / E.spb)), sample: id, offset: 0, gain: 0 };
+    await commit(false); return;
+  }
   const r = $('#lanes').getBoundingClientRect(), lane = P().tracks[Math.floor((e.clientY - r.top) / LANE)];
   await importFiles(files, lane?.id, Math.max(0, (e.clientX - r.left) / UI.ppb));
 }));
 
+function markSel() { document.querySelectorAll('#lanes .clip').forEach(c => c.classList.toggle('sel', c.dataset.clip === UI.clip)); }
+function peaksFor(id) {
+  if (UI.peaks.has(id)) return UI.peaks.get(id); const b = E.buffers.get(id); if (!b) return null;
+  const d = b.getChannelData(0), d2 = b.numberOfChannels > 1 ? b.getChannelData(1) : d, step = 256, pk = new Float32Array(Math.ceil(d.length / step));
+  for (let i = 0; i < pk.length; i++) { let m = 0; for (let j = i * step, e = Math.min(d.length, j + step); j < e; j++) m = Math.max(m, Math.abs(d[j]), Math.abs(d2[j])); pk[i] = m; }
+  UI.peaks.set(id, pk); return pk;
+}
+function drawClip(el, fc) {
+  if (!fc) return; const { t, c } = fc, cv = el.querySelector('canvas'), W = Math.max(1, el.clientWidth), H = 44, dpr = devicePixelRatio || 1;
+  cv.width = W * dpr; cv.height = H * dpr; const g = cv.getContext('2d'); g.scale(dpr, dpr); g.fillStyle = t.color;
+  if (isMidi(c)) {
+    const notes = E.notesOf(c), L = Math.max(0.0625, E.loopLen(c)); if (!notes.length) return; const ps = notes.map(n => n.p), lo = Math.min(...ps) - 1, hi = Math.max(...ps) + 1, rh = Math.max(2, Math.min(6, H / (hi - lo + 1)));
+    for (let base = 0; base < c.len; base += L) { if (base > 0) { g.globalAlpha = 0.35; g.fillRect(base / c.len * W, 0, 1, H); } g.globalAlpha = base > 0 ? 0.75 : 1;
+      for (const n of notes) if (n.s < L && base + n.s < c.len) g.fillRect((base + n.s) / c.len * W, H - (n.p - lo + 1) * (H - rh) / (hi - lo + 1) - rh, Math.max(2, Math.min(n.l, L - n.s) / c.len * W - 1), rh); }
+    g.globalAlpha = 1;
+  } else {
+    const pk = peaksFor(c.sample), b = E.buffers.get(c.sample); if (!pk) return; const sr = b.sampleRate / 256, mid = H / 2;
+    for (let x = 0; x < W; x++) { const sec = (c.offset || 0) + x / W * c.len * E.spb, i = Math.floor(sec * sr); if (i >= pk.length) break; const a = pk[i] * mid * db(c.gain || 0); g.fillRect(x, mid - a, 1, Math.max(1, a * 2)); }
+  }
+}
 // ---------- dock ----------
 document.querySelector('.tabs').addEventListener('click', e => { const b = e.target.closest('[data-tab]'); if (b) setTab(b.dataset.tab); });
 function setTab(t) { UI.tab = t; document.querySelectorAll('.tabs [data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === t)); ['editor', 'devices', 'mixer', 'plugins'].forEach(p => $('#' + p).hidden = p !== t); renderDock(); }
@@ -239,18 +389,28 @@ function renderDock() {
 function renderEditor() {
   const fc = UI.clip && findClip(UI.clip), box = $('#editor');
   if (!fc) { box.innerHTML = `<div class="empty">Select a clip to edit it. Double-click an empty spot on an instrument track to make a new MIDI clip, or drop audio files onto the arrangement.</div>`; return; }
-  if (!fc.c.notes) return renderAudioEditor(fc, box);
-  if (fc.t.inst === 'drums') return renderSeq(fc, box);
-  renderPianoRoll(fc, box);
+  if (!isMidi(fc.c)) return renderAudioEditor({ ...fc, ref: fc.c }, box);
+  const pat = fc.c.pattern && P().patterns[fc.c.pattern];
+  const ed = pat ? { t: fc.t, c: pat, ref: fc.c, slot: fc.slot } : { ...fc, ref: fc.c };
+  if (fc.t.inst === 'drums') return renderSeq(ed, box);
+  renderPianoRoll(ed, box);
 }
 function clipBar(fc, extra = '') {
-  return `<div class="prbar"><input id="cName" value="${esc(fc.c.name)}" aria-label="Clip name" style="width:140px;cursor:text"><label>Length <input id="cLen" type="number" min="0.25" step="0.25" value="${+fc.c.len.toFixed(3)}" style="width:72px;cursor:text"> beats</label>${extra}${fc.c.notes ? '<button id="cMid">Export .mid</button>' : ''}<button id="cDup">Duplicate →</button><button id="cDel">Delete clip</button></div>`;
+  const ref = fc.ref || fc.c, midi = isMidi(ref), pat = !!ref.pattern;
+  const patBits = midi ? (pat ? `<span class="pattag" title="This clip is a pattern: every copy plays the same notes, so editing one edits all">⧉ Pattern · edits change every copy</span><button id="cUnique">Make unique</button>` : `<button id="cPattern" title="Turn this clip into a pattern so its copies stay linked (FL Studio style)">Make pattern</button>`) : '';
+  const where = fc.slot != null ? `<button id="cToArr" title="Copy this clip into the arrangement at the playhead">→ Arrangement</button>` : `<button id="cToSes" title="Copy this clip into the clip launcher">→ Session</button>`;
+  return `<div class="prbar"><input id="cName" value="${esc(fc.c.name)}" aria-label="${pat ? 'Pattern' : 'Clip'} name" style="width:140px;cursor:text"><label>${pat ? 'Pattern length' : 'Length'} <input id="cLen" type="number" min="0.25" step="0.25" value="${+fc.c.len.toFixed(3)}" style="width:72px;cursor:text"> beats</label>${extra}${patBits}${midi ? '<button id="cMid">Export .mid</button>' : ''}${where}<button id="cDup">Duplicate →</button><button id="cDel">Delete clip</button></div>`;
 }
 function bindClipBar(fc, rerender) {
   $('#cName').onchange = e => { snapshot(); fc.c.name = e.target.value; commit(false); };
   $('#cLen').onchange = e => { snapshot(); fc.c.len = Math.max(0.25, +e.target.value || 4); commit(false); };
   if ($('#cMid')) $('#cMid').onclick = () => download(midiFile(fc.c, P().bpm), (fc.c.name || 'clip') + '.mid');
   $('#cDup').onclick = () => duplicateClip(); $('#cDel').onclick = () => deleteClip();
+  const ref = fc.ref || fc.c;
+  if ($('#cPattern')) $('#cPattern').onclick = async () => { snapshot(); const id = uid(); P().patterns[id] = { name: ref.name || 'Pattern', len: ref.len, notes: ref.notes }; delete ref.notes; ref.pattern = id; await commit(false); toast('Now a pattern — duplicate it and every copy stays linked'); };
+  if ($('#cUnique')) $('#cUnique').onclick = async () => { snapshot(); const pt = P().patterns[ref.pattern], notes = []; for (let b = 0; b < ref.len; b += pt.len) for (const n of pt.notes) if (b + n.s < ref.len) notes.push({ ...n, s: b + n.s }); ref.notes = notes; ref.name = pt.name; delete ref.pattern; await commit(false); toast('This copy is now independent'); };
+  if ($('#cToSes')) $('#cToSes').onclick = async () => { const sl = E.slots(fc.t.id), i = sl.findIndex(x => !x); if (i < 0) return toast('All 8 session slots on this track are full'); snapshot(); sl[i] = { ...JSON.parse(JSON.stringify(ref)), id: uid(), start: 0 }; await commit(false); setView('session'); toast(`Copied to Session, scene ${i + 1}`); };
+  if ($('#cToArr')) $('#cToArr').onclick = async () => { snapshot(); const b = Math.floor(E.position() / P().sig) * P().sig; const c = { ...JSON.parse(JSON.stringify(ref)), id: uid(), start: b }; fc.t.clips.push(c); await commit(false); toast('Copied to the arrangement at bar ' + (b / P().sig + 1)); };
 }
 function renderPianoRoll(fc, box) {
   const grids = { '1/4': 1, '1/8': 0.5, '1/16': 0.25, '1/32': 0.125 };
@@ -337,6 +497,7 @@ const fromPos = (p, x) => p.log ? +(p.min * Math.pow(p.max / p.min, x / 1000)).t
 function paramsHtml(params, vals, key) {
   return params.map(p => { const v = vals[p.id] ?? p.def;
     if (p.type === 'select') return `<div class="pr"><label>${p.label}</label><select data-k="${key}" data-p="${p.id}">${p.options.map(o => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join('')}</select></div>`;
+    if (p.type === 'track') { const self = devOwner()?.id; return `<div class="pr"><label>${p.label}</label><select data-k="${key}" data-p="${p.id}"><option value="">— choose the kick or key track —</option>${P().tracks.filter(t => t.id !== self && t.kind !== 'group').map(t => `<option value="${t.id}" ${t.id === v ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>`; }
     if (p.type === 'toggle') return `<div class="pr"><label>${p.label}</label><input type="checkbox" data-k="${key}" data-p="${p.id}" ${v ? 'checked' : ''} style="justify-self:start;width:20px;height:20px;accent-color:var(--rose)"></div>`;
     return `<div class="pr"><label title="${p.label}">${p.label}</label><input type="range" data-k="${key}" data-p="${p.id}" min="${p.log ? 0 : p.min}" max="${p.log ? 1000 : p.max}" step="${p.log ? 1 : p.step}" value="${toPos(p, v)}"><output>${fmt(p, v)}</output></div>`; }).join('');
 }
@@ -358,7 +519,8 @@ function renderDevices() {
     const def = s.type === 'wam' ? { name: 'Web plugin', params: [] } : EFFECTS[s.type];
     h += `<div class="dev ${s.bypass ? 'off' : ''}" data-slot="${s.id}"><h4><span class="t" title="${esc(s.url || '')}">${esc(def?.name || s.type)}</span><button data-a="byp" title="Bypass">${s.bypass ? 'Off' : 'On'}</button><button data-a="l" title="Move left" ${i ? '' : 'disabled'}>‹</button><button data-a="r" title="Move right" ${i < o.inserts.length - 1 ? '' : 'disabled'}>›</button><button data-a="x" title="Remove">×</button></h4>`;
     if (s.type === 'eq') h += `<canvas class="eqc" data-eq="${s.id}"></canvas>`;
-    if (s.type === 'comp' || s.type === 'limiter') h += `<div style="font-size:11px;color:var(--mute);padding:6px 10px 2px">Gain reduction</div><div class="gr"><i data-gr="${s.id}"></i></div>`;
+    if (s.type === 'analyzer') h += `<canvas class="eqc" data-an="${s.id}" style="height:140px"></canvas>`;
+    if (s.type === 'comp' || s.type === 'limiter' || s.type === 'sccomp') h += `<div style="font-size:11px;color:var(--mute);padding:6px 10px 2px">Gain reduction</div><div class="gr"><i data-gr="${s.id}"></i></div>`;
     if (s.type === 'wam') h += `<div class="ps"><button class="tb" data-a="gui">Open plugin window</button></div>`;
     h += `<div class="ps">${def ? paramsHtml(def.params, s.params, s.id) : ''}</div></div>`;
   });
@@ -389,7 +551,7 @@ function renderDevices() {
       if (inp.nextElementSibling?.tagName === 'OUTPUT') inp.nextElementSibling.textContent = fmt(pdef, v);
       drawEq(); };
     inp.addEventListener('pointerdown', () => snapshot(), { once: false });
-    inp.addEventListener('input', apply); inp.addEventListener('change', () => { if (inp.tagName === 'SELECT' || inp.type === 'checkbox') snapshot(); apply(); persist(); if (k === 'inst' && pid === 'sample') commit(true); });
+    inp.addEventListener('input', apply); inp.addEventListener('change', () => { if (inp.tagName === 'SELECT' || inp.type === 'checkbox') snapshot(); apply(); persist(); if ((k === 'inst' && pid === 'sample') || pdef?.type === 'track') commit(true); });
   });
   drawEq();
 }
@@ -416,12 +578,13 @@ function chHtml(kind, o, name, color) {
   const sel = (UI.dev.kind === kind && (kind === 'master' || UI.dev.id === o.id)) ? 'sel' : '';
   const sends = kind === 'track' ? `<div class="snd">${P().returns.map(r => `<span>${r.id}</span><input type="range" min="0" max="1" step="0.01" value="${o.sends[r.id] || 0}" data-send="${r.id}" aria-label="Send ${r.name}">`).join('')}</div>` : '<div class="snd" style="min-height:34px"></div>';
   const pan = kind === 'track' ? `<input type="range" min="-1" max="1" step="0.01" value="${o.pan}" data-pan style="width:100%" aria-label="Pan" title="Pan">` : '<div style="height:20px"></div>';
-  return `<div class="ch ${sel}" data-kind="${kind}" data-id="${o.id || ''}" style="--c:${color}"><div class="cname" title="${esc(name)}">${esc(name)}</div><div class="fx">${o.inserts.map(s => s.type === 'wam' ? 'Web' : EFFECTS[s.type]?.name.split(' ')[0]).join(' · ') || '—'}</div>${sends}${pan}
+  const outSel = kind === 'track' && o.kind !== 'group' ? `<select class="outsel" aria-label="Output" title="Where this track's sound goes"><option value="master">→ Master</option>${P().tracks.filter(g => g.kind === 'group').map(g => `<option value="${g.id}" ${o.out === g.id ? 'selected' : ''}>→ ${esc(g.name)}</option>`).join('')}</select>` : kind === 'track' ? '<div class="fx">Group bus</div>' : '';
+  return `<div class="ch ${sel}" data-kind="${kind}" data-id="${o.id || ''}" style="--c:${color}"><div class="cname" title="${esc(name)}">${esc(name)}</div>${outSel}<div class="fx">${o.inserts.map(s => s.type === 'wam' ? 'Web' : EFFECTS[s.type]?.name.split(' ')[0]).join(' · ') || '—'}</div>${sends}${pan}
     <div class="fz"><input class="fader" type="range" min="-60" max="6" step="0.1" value="${o.vol}" aria-label="${esc(name)} volume"><canvas class="mtr" width="12" height="100"></canvas></div><div class="db">${o.vol <= -60 ? '−∞' : o.vol.toFixed(1)} dB</div>
     <div class="btns">${kind === 'track' ? `<button class="m ${o.mute ? 'on' : ''}" data-ms="mute">M</button><button class="s ${o.solo ? 'on' : ''}" data-ms="solo">S</button>` : ''}<button data-fx>FX</button></div></div>`;
 }
 function renderMixer() {
-  $('#mixer').innerHTML = `<div class="mix">${P().tracks.map(t => chHtml('track', t, t.name, t.color)).join('')}${P().returns.map(r => chHtml('return', r, r.name, '#888')).join('')}${chHtml('master', P().master, 'Master', '#ff4f8b')}</div>`;
+  $('#mixer').innerHTML = `<div class="specwrap"><canvas id="spec" aria-label="Master spectrum"></canvas><span>Master spectrum</span></div><div class="mix">${P().tracks.map(t => chHtml('track', t, t.name, t.color)).join('')}${P().returns.map(r => chHtml('return', r, r.name, '#888')).join('')}${chHtml('master', P().master, 'Master', '#ff4f8b')}</div>`;
 }
 const mixOwner = ch => ch.dataset.kind === 'master' ? P().master : ch.dataset.kind === 'return' ? P().returns.find(r => r.id === ch.dataset.id) : trk(ch.dataset.id);
 $('#mixer').addEventListener('input', e => {
@@ -430,7 +593,7 @@ $('#mixer').addEventListener('input', e => {
   else if (e.target.dataset.send) o.sends[e.target.dataset.send] = +e.target.value; else if ('pan' in e.target.dataset) o.pan = +e.target.value;
   E.applyMix();
 });
-$('#mixer').addEventListener('change', () => { persist(); renderHeads(); });
+$('#mixer').addEventListener('change', async e => { if (e.target.classList.contains('outsel')) { const t = trk(e.target.closest('.ch').dataset.id); snapshot(); t.out = e.target.value; await commit(true); return; } persist(); renderHeads(); });
 $('#mixer').addEventListener('pointerdown', e => { if (e.target.type === 'range') snapshot(); });
 $('#mixer').addEventListener('click', async e => {
   const ch = e.target.closest('.ch'); if (!ch) return; const o = mixOwner(ch);
@@ -465,10 +628,17 @@ function midiFile(clip, bpm) {
 }
 
 // ---------- clip ops ----------
-async function deleteClip() { const fc = UI.clip && findClip(UI.clip); if (!fc) return; snapshot(); fc.t.clips = fc.t.clips.filter(c => c !== fc.c); UI.clip = null; await commit(false); }
-async function duplicateClip() { const fc = UI.clip && findClip(UI.clip); if (!fc) return; snapshot(); const c = JSON.parse(JSON.stringify(fc.c)); c.id = uid(); c.start = fc.c.start + fc.c.len; fc.t.clips.push(c); UI.clip = c.id; await commit(false); }
+async function deleteClip() { const fc = UI.clip && findClip(UI.clip); if (!fc) return; snapshot(); if (fc.slot != null) { E.slots(fc.t.id)[fc.slot] = null; if (E.live[fc.t.id]?.clip === fc.c) delete E.live[fc.t.id]; } else fc.t.clips = fc.t.clips.filter(c => c !== fc.c); UI.clip = null; await commit(false); }
+async function duplicateClip() {
+  const fc = UI.clip && findClip(UI.clip); if (!fc) return; const c = JSON.parse(JSON.stringify(fc.c)); c.id = uid();
+  if (fc.slot != null) { const sl = E.slots(fc.t.id), i = sl.findIndex((x, k) => !x && k > fc.slot); if (i < 0) return toast('No empty slot below'); snapshot(); sl[i] = c; }
+  else { snapshot(); c.start = fc.c.start + fc.c.len; fc.t.clips.push(c); }
+  UI.clip = c.id; await commit(false); if (fc.c.pattern) toast('Linked copy — edit either one and both change');
+}
 async function splitClip() {
-  const fc = UI.clip && findClip(UI.clip), b = snapB(E.position()); if (!fc || b <= fc.c.start || b >= fc.c.start + fc.c.len) return toast('Put the playhead inside the selected clip to split it');
+  const fc = UI.clip && findClip(UI.clip), b = snapB(E.position());
+  if (fc?.slot != null) return toast('Split works on arrangement clips');
+  if (fc?.c.pattern) return toast('Click “Make unique” first, then split'); if (!fc || b <= fc.c.start || b >= fc.c.start + fc.c.len) return toast('Put the playhead inside the selected clip to split it');
   snapshot(); const c = fc.c, cut = b - c.start, d = JSON.parse(JSON.stringify(c)); d.id = uid(); d.start = b; d.len = c.len - cut; c.len = cut;
   if (c.notes) { d.notes = c.notes.filter(n => n.s >= cut).map(n => ({ ...n, s: n.s - cut })); c.notes = c.notes.filter(n => n.s < cut); } else d.offset = (c.offset || 0) + cut * E.spb;
   fc.t.clips.push(d); await commit(false);
@@ -481,6 +651,9 @@ function renderLib() {
   const t = trk(UI.track);
   $('#lib').innerHTML = `<h5>Instruments</h5>${Object.keys(SYNTH_PRESETS).map(n => `<button data-preset="${esc(n)}">${esc(n)}<small>${PRESET_INFO[n] || ''}</small></button>`).join('')}
     <button data-addk="drums">Drum kit<small>Step sequencer beat</small></button><button data-addk="sampler">Sampler<small>Play any sound</small></button><button data-addk="external">External MIDI<small>SHRUB / FM-1 / hardware</small></button>
+    <h5>Patterns</h5>${Object.entries(P().patterns || {}).map(([id, pt]) => `<button data-pat="${id}">⧉ ${esc(pt.name)}<small>${pt.len} beats · click to place on ${t && t.kind === 'inst' ? esc(t.name) : 'an instrument track'}</small></button>`).join('')}
+    <button data-newpat="1">+ New pattern<small>Linked clip you can paint across the song</small></button>
+    <h5>Mixing</h5><button data-addk="group">Group bus<small>Mix several tracks together</small></button>
     <h5>Effects${t ? ' → ' + esc(t.name) : ''}</h5>${Object.entries(EFFECTS).map(([k, d]) => `<button data-fx="${k}">${esc(d.name)}<small>${FX_INFO[k] || d.cat}</small></button>`).join('')}
     <p class="note">Click an instrument to load it on the selected track (or a new one). Click an effect to add it to the selected track.</p>`;
 }
@@ -491,6 +664,13 @@ $('#lib').addEventListener('click', async e => {
     if (t && t.kind === 'inst' && t.inst === 'synth') { snapshot(); Object.assign(t.instParams, SYNTH_PRESETS[pr], { preset: pr }); Object.entries(t.instParams).forEach(([k, v]) => E.setInstParam(t.id, k, v)); persist(); renderDock(); toast(`${pr} loaded on ${t.name}`); E.liveOn(t.id, 60, 0.8); setTimeout(() => E.liveOff(t.id, 60), 400); }
     else await addTrackOf('synth', { preset: pr });
   } else if (b.dataset.addk) await addTrackOf(b.dataset.addk);
+  else if (b.dataset.pat || b.dataset.newpat) {
+    if (!t || t.kind !== 'inst') return toast('Select an instrument or drum track first');
+    snapshot(); let id = b.dataset.pat; if (!id) { id = uid(); P().patterns[id] = { name: 'Pattern ' + (Object.keys(P().patterns).length + 1), len: 4, notes: [] }; }
+    const bar = Math.floor(E.position() / P().sig) * P().sig, end = t.clips.reduce((m, c) => c.start <= bar && c.start + c.len > bar ? c.start + c.len : m, bar);
+    const c = { id: uid(), name: P().patterns[id].name, start: end, len: P().patterns[id].len, pattern: id }; t.clips.push(c); UI.clip = c.id;
+    await commit(false); setTab('editor'); renderLib(); toast(b.dataset.newpat ? 'New pattern — draw notes below, then click it again in the Library to paint more copies' : 'Pattern placed — all copies stay linked');
+  }
   else if (b.dataset.fx) {
     const o = t || P().master; snapshot(); o.inserts.push({ id: uid(), type: b.dataset.fx, params: {}, bypass: false });
     UI.dev = t ? { kind: 'track', id: t.id } : { kind: 'master' }; await commit(true); setTab('devices'); toast(`${EFFECTS[b.dataset.fx].name} added to ${t ? t.name : 'Master'}`);
@@ -506,6 +686,10 @@ function showHelp() {
   <h3>Play &amp; record notes</h3><ol><li>Pick an instrument in the Library</li><li>Play with your keyboard: <kbd>A</kbd>–<kbd>;</kbd> (<kbd>Z</kbd>/<kbd>X</kbd> change octave) or a MIDI keyboard</li><li>Click ● on the track, then Record (<kbd>R</kbd>)</li><li>Or double-click a lane and click in the piano roll to draw notes</li></ol></div>
   <div><h3>Record vocals</h3><ol><li>Add track → <b>Audio / vocals</b></li><li>Click ● on it, then Record — allow the microphone</li><li>Stop with <kbd>Space</kbd>; your take appears as a clip</li></ol>
   <h3>Mix &amp; finish</h3><ol><li><b>Sound &amp; FX</b>: add effects (try Compressor, then Reverb)</li><li><b>Mixer</b>: faders, pan, and A/B sends to the reverb &amp; delay buses</li><li>File → <b>Export WAV</b> to share your song</li></ol></div></div>
+  <div class="cols"><div><h3>Automation</h3><ol><li>Click <b>A</b> on a track</li><li>Pick what to automate (volume, pan, sends or any effect knob)</li><li>Click the lane to add points, drag to shape, double-click to remove</li></ol>
+  <h3>Patterns (FL Studio style)</h3><ol><li>Library → <b>+ New pattern</b>, or “Make pattern” on a clip</li><li>Click the pattern in the Library to paint copies — edit one, they all change</li></ol></div>
+  <div><h3>Session / clip launcher (Ableton style)</h3><ol><li>Switch to <b>Session</b> at the top</li><li>Double-click a slot to make a clip, or send a clip there with “→ Session”</li><li>Press ▶ on a clip or a whole Scene — it starts on the next bar</li></ol>
+  <h3>Pro mixing</h3><ol><li><b>Sidechain Compressor</b>: pick the kick as its key track</li><li>Add track → <b>Group bus</b>, then route tracks to it in the Mixer</li><li>Track ⋯ → <b>Bounce to audio</b> to print a track with its effects</li><li>The Mixer shows a live spectrum of your master</li></ol></div></div>
   <h3>Shortcuts</h3><p style="color:var(--mute)"><kbd>Space</kbd> play/pause · <kbd>Enter</kbd> stop · <kbd>R</kbd> record · <kbd>M</kbd> metronome · <kbd>Del</kbd> delete clip · <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate · <kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+<kbd>S</kbd> save · <kbd>?</kbd> this guide</p>
   <p style="color:var(--mute)">Your song saves itself in this browser. Use File → Save project to keep a copy or move it to another computer. For VST/AU plugins (Serum, SHRUB…) use Rose Desktop — see the Plugins tab.</p>
   <button class="tb accent" id="helpClose" style="margin-top:8px">Got it</button></div>`;
@@ -552,6 +736,16 @@ const peak = an => { an.getFloatTimeDomainData(tbuf); let m = 0; for (let i = 0;
 function meterDraw(cv, v) { const g = cv.getContext('2d'), W = cv.width, H = cv.height, dbv = 20 * Math.log10(v + 1e-9), f = Math.max(0, Math.min(1, (dbv + 60) / 66));
   g.clearRect(0, 0, W, H); g.fillStyle = dbv > -1 ? '#ef4444' : dbv > -9 ? '#f59e0b' : '#22c55e';
   if (W > H) g.fillRect(0, 0, W * f, H); else g.fillRect(0, H * (1 - f), W, H * f); }
+const fbuf = new Float32Array(2048);
+function spectrum(cv, an) {
+  const W = cv.clientWidth, H = cv.clientHeight; if (!W) return; if (cv.width !== W * devicePixelRatio) { cv.width = W * devicePixelRatio; cv.height = H * devicePixelRatio; }
+  const g = cv.getContext('2d'); g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0); g.clearRect(0, 0, W, H);
+  an.getFloatFrequencyData(fbuf); const n = an.frequencyBinCount, sr = E.ctx.sampleRate, acc = getComputedStyle(document.documentElement).getPropertyValue('--rose');
+  g.strokeStyle = 'rgba(128,128,128,.25)'; g.beginPath(); [100, 1000, 10000].forEach(hz => { const x = Math.log(hz / 20) / Math.log(1000) * W; g.moveTo(x, 0); g.lineTo(x, H); }); g.stroke();
+  g.fillStyle = 'rgba(128,128,128,.7)'; g.font = '10px Inter'; [['100', 100], ['1k', 1000], ['10k', 10000]].forEach(([l, hz]) => g.fillText(l, Math.log(hz / 20) / Math.log(1000) * W + 3, H - 4));
+  g.beginPath(); for (let x = 0; x <= W; x++) { const hz = 20 * Math.pow(1000, x / W), i = Math.min(n - 1, Math.round(hz / (sr / 2) * n)), v = Math.max(0, Math.min(1, (fbuf[i] + 100) / 80)); const y = H - v * (H - 6); x ? g.lineTo(x, y) : g.moveTo(x, y); }
+  g.lineTo(W, H); g.lineTo(0, H); g.closePath(); g.fillStyle = acc; g.globalAlpha = 0.35; g.fill(); g.globalAlpha = 1; g.strokeStyle = acc; g.lineWidth = 1.5; g.stroke();
+}
 function frame() {
   const b = E.position(), spb = E.spb, sig = P().sig;
   $('#playhead').style.transform = `translateX(${b * UI.ppb}px)`;
@@ -559,13 +753,20 @@ function frame() {
   $('#pos').textContent = `${bar}.${beat}.${six}`; $('#clock').textContent = `${Math.floor(secs / 60)}:${(secs % 60).toFixed(1).padStart(4, '0')}`;
   if (E.g) {
     meterDraw($('#mmeter'), peak(E.g.analyser));
+    if (UI.tab === 'mixer' && $('#spec')) spectrum($('#spec'), E.g.analyser);
+    if (UI.tab === 'devices') document.querySelectorAll('[data-an]').forEach(cv => { const n = E.stripFor(UI.dev.kind, UI.dev.id)?.fx.find(f => f.slot.id === cv.dataset.an)?.node; if (n?.analyser) spectrum(cv, n.analyser); });
     if (UI.tab === 'mixer') document.querySelectorAll('#mixer .ch').forEach(ch => { const s = E.stripFor(ch.dataset.kind, ch.dataset.id); if (s) meterDraw(ch.querySelector('.mtr'), peak(s.meter)); });
     if (UI.tab === 'devices') document.querySelectorAll('[data-gr]').forEach(el => { const f = E.stripFor(UI.dev.kind, UI.dev.id)?.fx.find(f => f.slot.id === el.dataset.gr)?.node; if (f?.meter) el.style.width = Math.min(100, -f.meter() * 5) + '%'; });
   }
   if (E.playing) {
     const w = $('#lanesWrap'), x = b * UI.ppb; if (x > w.scrollLeft + w.clientWidth - 40 || x < w.scrollLeft) w.scrollLeft = Math.max(0, x - 80);
     const fc = UI.tab === 'editor' && UI.clip && findClip(UI.clip);
-    if (fc && fc.c.notes && fc.t.inst === 'drums') { const i = Math.floor((b - fc.c.start) * 4); document.querySelectorAll('#seq .st').forEach(s => s.classList.toggle('now', +s.dataset.i === i)); }
+    if (fc && isMidi(fc.c) && fc.t.inst === 'drums') {
+      const L = E.loopLen(fc.c), st = fc.slot != null ? (E.live[fc.t.id]?.clip === fc.c ? E.live[fc.t.id].start : null) : fc.c.start;
+      const i = st == null || b < st || (fc.slot == null && b >= st + fc.c.len) ? -1 : Math.floor((((b - st) % L) + L) % L * 4);
+      document.querySelectorAll('#seq .st').forEach(s => s.classList.toggle('now', +s.dataset.i === i));
+    }
+    if (UI.view === 'session') for (const id in E.live) { const l = E.live[id], L = E.loopLen(l.clip), el = document.querySelector(`.srow[data-id="${id}"] .slot[data-slot="${l.slot}"] .prog`); if (el && b >= l.start) el.style.width = (((b - l.start) % L) / L * 100) + '%'; }
   }
   requestAnimationFrame(frame);
 }

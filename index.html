@@ -34,6 +34,7 @@
       <button id="bLoop" class="tg" title="Loop the highlighted region (drag across the top of the ruler to set it)"><svg width="16" height="16"><use href="#i-loop"/></svg>&nbsp;Loop</button>
       <button id="bMet" class="tg" title="Metronome (M)"><svg width="16" height="16"><use href="#i-click"/></svg>&nbsp;Click</button>
     </div>
+    <div class="grp seg2" role="group" aria-label="View"><button id="vArr" class="tg on" title="Arrangement: your song on a timeline">Arrange</button><button id="vSes" class="tg" title="Session: launch clips and scenes live (Ableton style)">Session</button></div>
     <div class="lcd" title="Bar . beat . sixteenth"><span id="pos">1.1.1</span><small id="clock">0:00.0</small></div>
     <label class="bpm" title="Tempo in beats per minute">Tempo <input id="bpm" type="number" min="40" max="240" step="1" value="126"></label>
     <canvas id="mmeter" width="120" height="20" aria-label="Master level"></canvas>
@@ -76,6 +77,7 @@
   <button data-add="drums"><span class="ic">●</span><b>Drums</b><small>Kick, snare, hats — click steps to make a beat</small></button>
   <button data-add="audio"><span class="ic">~</span><b>Audio / vocals</b><small>Record a mic or drop in audio files</small></button>
   <button data-add="sampler"><span class="ic">S</span><b>Sampler</b><small>Play any sound across the keyboard</small></button>
+  <button data-add="group"><span class="ic">G</span><b>Group bus</b><small>Mix several tracks together (drums, vocals…)</small></button>
   <button data-add="external"><span class="ic">M</span><b>External MIDI</b><small>Play SHRUB, an FM-1 or a hardware synth</small></button>
 </div>
 <div class="pop" id="filePop" hidden>

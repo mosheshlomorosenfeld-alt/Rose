@@ -16,7 +16,16 @@ class RoseCrush extends AudioWorkletProcessor{
   process(i,o,p){const inp=i[0],out=o[0];if(!inp.length)return true;const st=Math.pow(2,p.bits[0]-1),d=Math.max(1,Math.round(p.down[0]));
     for(let n=0;n<inp[0].length;n++){if(this.c++%d===0)for(let c=0;c<inp.length;c++)this.h[c]=Math.round(inp[c][n]*st)/st;for(let c=0;c<out.length;c++)out[c][n]=this.h[Math.min(c,inp.length-1)]}
     return true}}
-registerProcessor('rose-gate',RoseGate);registerProcessor('rose-crush',RoseCrush);`;
+class RoseSC extends AudioWorkletProcessor{
+  static get parameterDescriptors(){return[{name:'threshold',defaultValue:-24},{name:'ratio',defaultValue:6},{name:'attack',defaultValue:0.003},{name:'release',defaultValue:0.15},{name:'makeup',defaultValue:0}]}
+  constructor(){super();this.env=0;this.gr=0;this.port.onmessage=()=>this.port.postMessage(this.gr)}
+  process(i,o,p){const inp=i[0],key=i[1],out=o[0];if(!inp.length)return true;const k=key&&key.length?key:inp,sr=sampleRate;
+    const a=Math.exp(-1/(sr*Math.max(p.attack[0],1e-4))),r=Math.exp(-1/(sr*Math.max(p.release[0],1e-3))),th=p.threshold[0],ra=Math.max(1,p.ratio[0]),mk=Math.pow(10,p.makeup[0]/20);let mx=0;
+    for(let n=0;n<inp[0].length;n++){let pk=0;for(let c=0;c<k.length;c++)pk=Math.max(pk,Math.abs(k[c][n]));this.env=pk>this.env?a*this.env+(1-a)*pk:r*this.env+(1-r)*pk;
+      const lv=20*Math.log10(this.env+1e-9),over=lv-th,red=over>0?over*(1-1/ra):0;mx=Math.max(mx,red);const g=Math.pow(10,-red/20)*mk;
+      for(let c=0;c<out.length;c++)out[c][n]=(inp[c]||inp[0])[n]*g}
+    this.gr=mx;return true}}
+registerProcessor('rose-gate',RoseGate);registerProcessor('rose-crush',RoseCrush);registerProcessor('rose-sc',RoseSC);`;
 
 const loaded = new WeakSet();
 export async function prepareWorklets(ctx) {
@@ -27,14 +36,17 @@ export async function prepareWorklets(ctx) {
     loaded.add(ctx);
   } catch (e) { console.warn('Worklets unavailable; gate and bitcrusher will pass audio through', e); }
 }
-const worklet = (ctx, name) => { try { return loaded.has(ctx) ? new AudioWorkletNode(ctx, name, { outputChannelCount: [2] }) : null; } catch { return null; } };
+const worklet = (ctx, name, inputs = 1) => { try { return loaded.has(ctx) ? new AudioWorkletNode(ctx, name, { numberOfInputs: inputs, outputChannelCount: [2] }) : null; } catch { return null; } };
 
 const db = v => Math.pow(10, v / 20);
 const R = (id, label, min, max, def, step = 0.01, unit = '', log = false) => ({ id, label, type: 'range', min, max, def, step, unit, log });
 const S = (id, label, options, def) => ({ id, label, type: 'select', options, def });
 const T = (id, label, def = false) => ({ id, label, type: 'toggle', def });
 const SYNC = { '1/1': 4, '1/2': 2, '1/2d': 3, '1/4': 1, '1/4d': 1.5, '1/4t': 2 / 3, '1/8': 0.5, '1/8d': 0.75, '1/8t': 1 / 3, '1/16': 0.25, '1/16t': 1 / 6, '1/32': 0.125 };
-const smooth = (param, v, ctx) => { param.cancelScheduledValues(ctx.currentTime); param.setTargetAtTime(v, ctx.currentTime, 0.015); };
+// When AT is set (automation / offline export) changes are scheduled at that exact time instead of "now".
+let AT = null;
+export const setAt = t => { AT = t; };
+const smooth = (param, v, ctx) => { if (AT != null) { param.setValueAtTime(v, AT); return; } param.cancelScheduledValues(ctx.currentTime); param.setTargetAtTime(v, ctx.currentTime, 0.015); };
 
 // wet/dry helper: input -> dry -> output, input -> [fx] -> wet -> output
 function mixer(ctx) {
@@ -134,6 +146,21 @@ export const EFFECTS = {
         dispose() { [pre, c, out].forEach(n => n.disconnect()); }
       };
     }
+  },
+  sccomp: {
+    name: 'Sidechain Compressor', cat: 'Dynamics',
+    params: [{ id: 'source', label: 'Key track', type: 'track', def: '' }, R('threshold', 'Threshold', -60, 0, -24, 0.1, 'dB'), R('ratio', 'Ratio', 1, 20, 6, 0.1, ':1'),
+      R('attack', 'Attack', 0.0005, 0.1, 0.003, 0.0005, 's'), R('release', 'Release', 0.02, 1, 0.15, 0.01, 's'), R('makeup', 'Makeup', 0, 18, 0, 0.1, 'dB')],
+    build(ctx) {
+      // ducks this track whenever the key track (e.g. the kick) hits — the real EDM sidechain
+      const input = ctx.createGain(), output = ctx.createGain(), w = worklet(ctx, 'rose-sc', 2); let gr = 0;
+      if (w) { input.connect(w, 0, 0); w.connect(output); w.port.onmessage = e => gr = e.data; } else input.connect(output);
+      return { input, output, keyNode: w, set(id, v) { if (id !== 'source' && w) smooth(w.parameters.get(id), v, ctx); }, meter: () => { w?.port.postMessage(0); return -gr; }, dispose() { [input, output, w].forEach(n => n && n.disconnect()); } };
+    }
+  },
+  analyzer: {
+    name: 'Spectrum Analyzer', cat: 'Utility', params: [],
+    build(ctx) { const input = ctx.createGain(), an = ctx.createAnalyser(); an.fftSize = 4096; an.smoothingTimeConstant = 0.8; input.connect(an); return { input, output: input, analyser: an, set() { }, dispose() { input.disconnect(); } }; }
   },
   gate: {
     name: 'Noise Gate', cat: 'Dynamics',
@@ -307,7 +334,7 @@ export const EFFECTS = {
   }
 };
 
-export const defaultParams = type => Object.fromEntries(EFFECTS[type].params.map(p => [p.id, p.def]));
+export const defaultParams = type => Object.fromEntries((EFFECTS[type]?.params || []).map(p => [p.id, p.def]));
 
 // Instantiate an effect on a context and apply stored params
 export function createEffect(ctx, slot, env) {
