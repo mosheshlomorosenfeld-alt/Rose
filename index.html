@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rose DAW</title>
+<meta name="description" content="Rose — a browser DAW by Rosenfeld Productions: arrange, record, sequence, mix and master.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/rose.css">
+</head>
+<body>
+<div id="app">
+  <header class="top">
+    <div class="brand">Rose</div>
+    <div class="transport" role="group" aria-label="Transport">
+      <button id="bHome" class="ib" title="Go to start (Home)">⏮</button>
+      <button id="bPlay" class="ib play" title="Play / pause (Space)">▶</button>
+      <button id="bStop" class="ib" title="Stop (Enter)">■</button>
+      <button id="bRec" class="ib rec" title="Record (R)">●</button>
+      <button id="bLoop" class="tg" title="Loop">Loop</button>
+      <button id="bMet" class="tg" title="Metronome (M)">Click</button>
+    </div>
+    <div class="lcd"><span id="pos">1.1.1</span><small id="clock">0:00.0</small></div>
+    <label class="bpm">BPM <input id="bpm" type="number" min="40" max="240" step="1" value="126"></label>
+    <canvas id="mmeter" width="120" height="20" aria-label="Master level"></canvas>
+    <div class="spacer"></div>
+    <div class="menu">
+      <button id="bUndo" class="tb" title="Undo (Ctrl+Z)">↶</button><button id="bRedo" class="tb" title="Redo (Ctrl+Shift+Z)">↷</button>
+      <select id="addTrack" class="tb" aria-label="Add track"><option value="">+ Track</option><option value="audio">Audio track</option><option value="synth">Rose Synth</option><option value="drums">Rose Drums</option><option value="sampler">Rose Sampler</option><option value="external">External MIDI</option></select>
+      <label class="tb file">Import audio<input id="fImport" type="file" accept="audio/*" multiple hidden></label>
+      <button id="bNew" class="tb">New</button>
+      <button id="bSave" class="tb">Save</button>
+      <label class="tb file">Open<input id="fOpen" type="file" accept=".rose,application/json" hidden></label>
+      <button id="bExport" class="tb accent">Export WAV</button>
+    </div>
+  </header>
+
+  <main class="arr">
+    <div class="heads" id="heads"><div class="hcorner"><input id="songName" aria-label="Song name" value="Untitled song"><span class="hint">Zoom <input id="zoom" type="range" min="12" max="160" value="44"></span><select id="snap" aria-label="Snap"><option value="1">Snap 1 beat</option><option value="0.5">Snap 1/8</option><option value="0.25" selected>Snap 1/16</option><option value="0">No snap</option></select></div><div id="hlist"></div></div>
+    <div class="lanesWrap" id="lanesWrap">
+      <div class="ruler" id="ruler"></div>
+      <div class="lanes" id="lanes"></div>
+      <div class="playhead" id="playhead"></div>
+    </div>
+  </main>
+
+  <section class="dock">
+    <nav class="tabs" role="tablist">
+      <button data-tab="editor" class="on">Editor</button><button data-tab="devices">Devices</button><button data-tab="mixer">Mixer</button><button data-tab="plugins">Plugins</button>
+      <span class="dockinfo" id="dockinfo"></span>
+    </nav>
+    <div class="pane" id="editor"></div>
+    <div class="pane" id="devices" hidden></div>
+    <div class="pane" id="mixer" hidden></div>
+    <div class="pane" id="plugins" hidden></div>
+  </section>
+</div>
+<div class="start" id="startScreen"><div><h1>Rose</h1><p>Arrange, record, sequence, mix and master in your browser.</p><button id="bStart" class="big">Open studio</button><p class="small">Keys: Space play · Enter stop · R record · M click · A–; play notes · Z/X octave · Del delete · Ctrl+D duplicate · Ctrl+E split · Ctrl+Z undo</p></div></div>
+<div class="toast" id="toast" role="status"></div>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
