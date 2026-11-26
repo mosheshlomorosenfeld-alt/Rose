@@ -2,6 +2,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "Engine.h"
+#include "Updater.h"
 
 namespace rose
 {
@@ -155,13 +156,14 @@ private:
     void changeListenerCallback (juce::ChangeBroadcaster*) override;
     void rebuildHeaders();
     void openEditor (juce::AudioProcessor&);
-    void showScanner(); void showAudioSettings(); void save(); void open(); void bounce();
+    void showScanner(); void showAudioSettings(); void save(); void open(); void bounce(); void templatesMenu(); void addInstrumentMenu(); void offerUpdate (Updater::Release, bool askNow); void installUpdate();
+    Updater::Release pendingUpdate; bool updating = false;
 
     RoseLook look;
     Engine engine;
     juce::TextButton bHome { "|<" }, bPlay { "Play" }, bStop { "Stop" }, bRec { "Rec" }, bLoop { "Loop" }, bClick { "Click" },
                      bAddAudio { "+ Audio" }, bAddInst { "+ Instrument" }, bMaster { "Master FX" }, bPlugins { "Plugins..." }, bAudio { "Audio/MIDI..." },
-                     bOpen { "Open" }, bSave { "Save" }, bBounce { "Bounce WAV" }, bAbout { "?" }, bPointer { "Pointer" }, bScissors { "Scissors" };
+                     bOpen { "Open" }, bSave { "Save" }, bBounce { "Bounce WAV" }, bAbout { "?" }, bTemplates { "Templates" }, bUpdate { "Update" }, bPointer { "Pointer" }, bScissors { "Scissors" };
     juce::Slider bpm; juce::Label time, bpmLabel { {}, "BPM" };
     juce::Component headerHolder; juce::OwnedArray<TrackHeader> headers;
     struct SyncViewport : juce::Viewport { std::function<void()> moved; void visibleAreaChanged (const juce::Rectangle<int>&) override { if (moved) moved(); } } viewport;

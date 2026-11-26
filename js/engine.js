@@ -1,7 +1,7 @@
 // Rose — audio engine: project model, mixer graph (tracks, groups, returns, sidechains), transport/scheduler,
 // arrangement + patterns + session clips, automation, recording, MIDI, web plugins, WAV export, bounce-in-place.
 import { createEffect, prepareWorklets, setAt, EFFECTS } from './effects.js';
-import { createInstrument, instDefaults, applyMidiFx, chordOf, arpOrder, ARP_RATES } from './instruments.js';
+import { createInstrument, instDefaults, applyMidiFx, chordOf, arpOrder, ARP_RATES, SYNTH_PRESETS } from './instruments.js';
 
 export const db = v => v <= -60 ? 0 : Math.pow(10, v / 20);
 export const uid = () => Math.random().toString(36).slice(2, 9);
@@ -9,7 +9,7 @@ const COLORS = ['#ff4f8b', '#ffb020', '#22c55e', '#3b82f6', '#a855f7', '#14b8a6'
 export const SCENES = 8;
 
 export function newTrack(kind, inst, n = 1) {
-  const names = { audio: 'Audio', synth: 'Synth', drums: 'Drums', sampler: 'Sampler', external: 'External', group: 'Group' };
+  const names = { audio: 'Audio', synth: 'Synth', drums: 'Drums', sampler: 'Sampler', sounds: 'Piano', external: 'External', group: 'Group' };
   const key = kind === 'inst' ? inst : kind;
   return { id: uid(), name: `${names[key]} ${n}`, kind, inst: kind === 'inst' ? inst : null, instParams: kind === 'inst' ? instDefaults(inst) : {},
     color: COLORS[(n * 3 + key.length) % COLORS.length], vol: -6, pan: 0, mute: false, solo: false, arm: false, inserts: [], sends: { A: 0, B: 0 }, clips: [], out: 'master', auto: [] };
@@ -41,6 +41,22 @@ export function newProject() {
       { id: 'B', name: 'Delay bus', vol: -6, inserts: [{ id: uid(), type: 'delay', params: { mix: 1 }, bypass: false }] }],
     master: { vol: -1, inserts: [{ id: uid(), type: 'limiter', params: { ceiling: -0.3 }, bypass: false }] }
   };
+}
+// Song templates (templates/templates.json, shared with the desktop app) become a normal project.
+export function projectFromTemplate(tp) {
+  const p = blankProject(); const slot = f => ({ id: uid(), type: f.type, params: { ...f.params }, bypass: false });
+  Object.assign(p, { name: tp.name, bpm: tp.bpm, loop: { on: true, start: tp.loop?.[0] ?? 0, end: tp.loop?.[1] ?? 16 }, patterns: {}, session: { slots: {} }, template: tp.id });
+  p.tracks = tp.tracks.map((x, i) => {
+    const t = x.type === 'audio' ? newTrack('audio', null, i + 1) : newTrack('inst', x.type, i + 1);
+    Object.assign(t, { name: x.name, vol: x.vol ?? -6, pan: x.pan ?? 0 }); Object.assign(t.sends, x.sends || {});
+    if (x.preset) Object.assign(t.instParams, SYNTH_PRESETS[x.preset], { preset: x.preset });
+    if (x.patch) t.instParams.patch = x.patch; Object.assign(t.instParams, x.params || {});
+    t.inserts = (x.fx || []).map(slot);
+    t.clips = (x.clips || []).map(c => ({ id: uid(), name: c.name, start: c.start, len: c.len, notes: c.notes.map(([pp, s, l, v]) => ({ p: pp, s, l, v })) }));
+    return t;
+  });
+  p.master.inserts = (tp.master?.fx || []).map(slot);
+  return p;
 }
 // bring older saved projects up to date
 export function upgrade(p) {
@@ -117,7 +133,7 @@ export class Engine {
       const dest = t.kind !== 'group' && t.out !== 'master' && g.tracks.get(t.out) ? g.tracks.get(t.out).input : g.master.input;
       const s = await this.strip(ctx, t.inserts, dest, live);
       s.sends = {}; for (const r of p.returns) { const sg = ctx.createGain(); sg.gain.value = t.sends[r.id] || 0; s.fader.connect(sg).connect(g.returns.get(r.id).input); s.sends[r.id] = sg; }
-      if (t.kind === 'inst') { s.inst = createInstrument(ctx, t, this.env(ctx)); s.inst?.output.connect(s.input); }
+      if (t.kind === 'inst') { s.inst = createInstrument(ctx, t, this.env(ctx)); s.inst?.output.connect(s.input); if (s.inst?.ready) await s.inst.ready; }
       s.panner.pan.value = t.pan; g.tracks.set(t.id, s);
     }
     // sidechains: the key track's post-fader signal feeds the compressor's second input

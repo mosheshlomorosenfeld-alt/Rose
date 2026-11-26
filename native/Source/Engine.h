@@ -1,7 +1,7 @@
 // Rose Desktop — engine: project model, plugin hosting (VST3 / AU), processing graph, transport, recording, bounce.
 #pragma once
 #include <JuceHeader.h>
-#include "BuiltIns.h"
+#include "Registry.h"
 
 namespace rose
 {
@@ -186,6 +186,9 @@ public:
     bool saveSession (const juce::File&);
     bool loadSession (const juce::File&);
     bool bounce (const juce::File&, std::function<void (double)> progress);
+    // song templates (templates/templates.json, shared with the web app): replaces the session
+    bool applyTemplate (const juce::var& tpl, juce::StringArray& problems);
+    static void setParam (juce::AudioProcessor&, const juce::String& id, const juce::var& value);
     void scanDefaultsIfEmpty();
     juce::File recordingsFolder() const;
     juce::AudioProcessorGraph& getGraph() { return *graph; }

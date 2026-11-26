@@ -4,12 +4,49 @@
 const R = (id, label, min, max, def, step = 0.01, unit = '', log = false) => ({ id, label, type: 'range', min, max, def, step, unit, log });
 const S = (id, label, options, def) => ({ id, label, type: 'select', options, def });
 const hz = p => 440 * Math.pow(2, (p - 69) / 12);
+const smooth = (param, v, ctx) => { param.cancelScheduledValues(ctx.currentTime); param.setTargetAtTime(v, ctx.currentTime, 0.015); };
 const noiseCache = new WeakMap();
 function noise(ctx) {
   if (noiseCache.has(ctx)) return noiseCache.get(ctx);
   const b = ctx.createBuffer(1, ctx.sampleRate * 2, ctx.sampleRate), d = b.getChannelData(0);
   for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1;
   noiseCache.set(ctx, b); return b;
+}
+
+export const SOUND_LIB = [
+  { id: 'acoustic_grand_piano', name: 'Grand Piano', cat: 'Keys', gain: 6.84, sustain: false },
+  { id: 'electric_piano_1', name: 'Electric Piano', cat: 'Keys', gain: 6.69, sustain: false },
+  { id: 'rock_organ', name: 'Organ', cat: 'Keys', gain: 4.02, sustain: true },
+  { id: 'marimba', name: 'Marimba', cat: 'Keys', gain: 5.02, sustain: false },
+  { id: 'acoustic_guitar_nylon', name: 'Nylon Guitar', cat: 'Guitar & Bass', gain: 4.0, sustain: false },
+  { id: 'electric_bass_finger', name: 'Electric Bass', cat: 'Guitar & Bass', gain: 4.02, sustain: false },
+  { id: 'string_ensemble_1', name: 'Strings', cat: 'Orchestra', gain: 5.02, sustain: true },
+  { id: 'pizzicato_strings', name: 'Pizzicato Strings', cat: 'Orchestra', gain: 3.65, sustain: false },
+  { id: 'violin', name: 'Violin', cat: 'Orchestra', gain: 4.51, sustain: true },
+  { id: 'brass_section', name: 'Brass Section', cat: 'Orchestra', gain: 3.22, sustain: true },
+  { id: 'trumpet', name: 'Trumpet', cat: 'Orchestra', gain: 4.05, sustain: true },
+  { id: 'flute', name: 'Flute', cat: 'Orchestra', gain: 5.38, sustain: true },
+  { id: 'clarinet', name: 'Clarinet', cat: 'Orchestra', gain: 4.44, sustain: true },
+  { id: 'choir_aahs', name: 'Choir', cat: 'Vocal', gain: 4.77, sustain: true }
+];
+export const SOUND_NOTES = [21, 22, 25, 28, 31, 34, 37, 40, 43, 46, 49, 52, 55, 58, 61, 64, 67, 70, 73, 76, 79, 82, 85, 88, 91, 94, 97, 100, 103, 106, 108];
+
+// Decoded samples are shared by every track and by offline export (an AudioBuffer works in any context).
+const SAMPLE_CACHE = new Map();
+const LOOPS = new WeakMap();
+const soundsBase = () => new URL('../sounds/', import.meta.url).href;
+function loadNote(ctx, id, n) {
+  const url = `${soundsBase()}${id}/${n}.mp3`;
+  if (!SAMPLE_CACHE.has(url)) SAMPLE_CACHE.set(url, fetch(url).then(r => { if (!r.ok) throw new Error(r.status); return r.arrayBuffer(); })
+    .then(ab => new Promise((res, rej) => ctx.decodeAudioData(ab, res, rej))).catch(() => { SAMPLE_CACHE.delete(url); return null; }));
+  return SAMPLE_CACHE.get(url);
+}
+// Sustaining instruments loop between two rising zero crossings in the steady part of the note.
+function loopPoints(buf) {
+  if (LOOPS.has(buf)) return LOOPS.get(buf);
+  const d = buf.getChannelData(0), sr = buf.sampleRate;
+  const zc = t => { let i = Math.min(d.length - 2, Math.floor(t * sr)); for (let k = 0; k < sr * 0.05 && i < d.length - 1; k++, i++) if (d[i] <= 0 && d[i + 1] > 0) return i / sr; return t; };
+  const lp = { start: zc(0.9), end: zc(Math.min(buf.duration - 0.5, 2.5)) }; LOOPS.set(buf, lp); return lp;
 }
 
 export const SYNTH_PRESETS = {
@@ -106,6 +143,42 @@ export const INSTRUMENTS = {
       };
     }
   },
+  sounds: {
+    name: 'Rose Sounds',
+    params: [S('patch', 'Instrument', SOUND_LIB.map(x => x.name), 'Grand Piano'), R('a', 'Attack', 0.001, 2, 0.003, 0.001, 's'), R('r', 'Release', 0.02, 4, 0.35, 0.01, 's'),
+      R('tone', 'Tone', 300, 20000, 20000, 1, 'Hz', true), R('vsens', 'Velocity', 0, 1, 0.7), R('shift', 'Transpose', -24, 24, 0, 1, 'st'), R('vol', 'Volume', 0, 1.5, 0.8)],
+    build(ctx) {
+      // General-MIDI sampled instruments (FluidR3, MIT / CC BY 3.0 — see sounds/CREDITS.md), recorded every third semitone.
+      const out = ctx.createGain(), lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 20000; lp.connect(out);
+      const st = { a: 0.003, r: 0.35, vsens: 0.7, shift: 0, vol: 0.8 }; let patch = SOUND_LIB[0], bufs = new Map(); const voices = new Map();
+      const api = {
+        output: out, ready: Promise.resolve(),
+        noteOn(p, vel = 0.8, t = ctx.currentTime) {
+          const q = p + st.shift; let best = null, bd = 99;
+          for (const [n, b] of bufs) { const dd = Math.abs(n - q); if (b && dd < bd) { bd = dd; best = n; } }
+          if (best == null) return;
+          if (voices.has(p)) this.noteOff(p, t);
+          const buf = bufs.get(best), s = ctx.createBufferSource(), g = ctx.createGain();
+          s.buffer = buf; s.playbackRate.value = Math.pow(2, (q - best) / 12);
+          if (patch.sustain) { const l = loopPoints(buf); s.loop = true; s.loopStart = l.start; s.loopEnd = l.end; }
+          const lvl = st.vol * patch.gain * 0.7 * (1 - st.vsens + st.vsens * vel);
+          g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(lvl, t + st.a);
+          s.connect(g).connect(lp); s.start(t); if (!patch.sustain) s.stop(t + buf.duration / s.playbackRate.value + 0.05);
+          voices.set(p, { s, g });
+        },
+        noteOff(p, t = ctx.currentTime) { const v = voices.get(p); if (!v) return; voices.delete(p); v.g.gain.cancelScheduledValues(t); v.g.gain.setValueAtTime(v.g.gain.value, t); v.g.gain.setTargetAtTime(0, t, st.r / 4); try { v.s.stop(t + st.r * 2 + 0.05); } catch { } },
+        allOff(t = ctx.currentTime) { for (const [p] of voices) this.noteOff(p, t); },
+        set(id, v) {
+          if (id === 'patch') {
+            const x = SOUND_LIB.find(s => s.name === v || s.id === v) || SOUND_LIB[0]; if (x === patch && bufs.size) return; patch = x; const m = new Map(); bufs = m;
+            this.ready = Promise.all(SOUND_NOTES.map(n => loadNote(ctx, x.id, n).then(b => { m.set(n, b); })));
+          } else if (id === 'tone') smooth(lp.frequency, v, ctx); else st[id] = v;
+        },
+        dispose() { this.allOff(); setTimeout(() => out.disconnect(), 3000); }
+      };
+      return api;
+    }
+  },
   external: {
     name: 'External MIDI',
     params: [R('ch', 'MIDI channel', 1, 16, 1, 1), R('vel', 'Velocity scale', 0.1, 1.5, 1, 0.01), R('shift', 'Transpose', -24, 24, 0, 1, 'st')],
@@ -132,7 +205,8 @@ export function createInstrument(ctx, track, env) {
   const def = INSTRUMENTS[track.inst]; if (!def) return null;
   const inst = def.build(ctx, env); const p = { ...instDefaults(track.inst), ...track.instParams };
   if (p.preset) inst.set('preset', p.preset);
-  for (const [k, v] of Object.entries(p)) if (k !== 'preset') inst.set(k, v);
+  if (p.patch) inst.set('patch', p.patch);
+  for (const [k, v] of Object.entries(p)) if (k !== 'preset' && k !== 'patch') inst.set(k, v);
   return inst;
 }
 

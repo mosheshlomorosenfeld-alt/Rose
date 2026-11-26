@@ -347,26 +347,4 @@ private:
     juce::Synthesiser synthEngine;
 };
 
-//==============================================================================
-struct BuiltInInfo { juce::String id, name; bool instrument; std::function<std::unique_ptr<BuiltIn>()> make; };
-inline const std::vector<BuiltInInfo>& builtIns()
-{
-    static const std::vector<BuiltInInfo> list {
-        { "synth", "Rose Synth", true, [] { return std::make_unique<RoseSynth>(); } },
-        { "eq", "Rose EQ", false, [] { return std::make_unique<EqFx>(); } },
-        { "filter", "Rose Filter", false, [] { return std::make_unique<FilterFx>(); } },
-        { "comp", "Rose Compressor", false, [] { return std::make_unique<CompFx>(); } },
-        { "limiter", "Rose Limiter", false, [] { return std::make_unique<LimiterFx>(); } },
-        { "gate", "Rose Gate", false, [] { return std::make_unique<GateFx>(); } },
-        { "reverb", "Rose Reverb", false, [] { return std::make_unique<ReverbFx>(); } },
-        { "delay", "Rose Delay", false, [] { return std::make_unique<DelayFx>(); } },
-        { "chorus", "Rose Chorus", false, [] { return std::make_unique<ChorusFx> (false); } },
-        { "flanger", "Rose Flanger", false, [] { return std::make_unique<ChorusFx> (true); } },
-        { "phaser", "Rose Phaser", false, [] { return std::make_unique<PhaserFx>(); } },
-        { "distortion", "Rose Distortion", false, [] { return std::make_unique<DistortionFx>(); } },
-        { "crusher", "Rose Bitcrusher", false, [] { return std::make_unique<CrusherFx>(); } },
-        { "width", "Rose Width & Utility", false, [] { return std::make_unique<WidthFx>(); } },
-    };
-    return list;
-}
 } // namespace rose

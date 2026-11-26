@@ -1,7 +1,7 @@
 // Rose — UI: arrangement, track headers, piano roll, step sequencer, device rack, mixer, plugins, keyboard & MIDI.
-import { Engine, newTrack, newProject, blankProject, uid, db, isMidi, upgrade, autoRange, SCENES, encodeWav } from './engine.js';
+import { Engine, newTrack, newProject, blankProject, projectFromTemplate, uid, db, isMidi, upgrade, autoRange, SCENES, encodeWav } from './engine.js';
 import { EFFECTS } from './effects.js';
-import { INSTRUMENTS, SYNTH_PRESETS, DRUM_ROWS, instDefaults, ARP_PARAMS, CHORD_PARAMS, midiDefaults, applyMidiFx, chordOf } from './instruments.js';
+import { INSTRUMENTS, SYNTH_PRESETS, SOUND_LIB, DRUM_ROWS, instDefaults, ARP_PARAMS, CHORD_PARAMS, midiDefaults, applyMidiFx, chordOf } from './instruments.js';
 
 const E = new Engine(); window.roseEngine = E;
 const $ = s => document.querySelector(s);
@@ -49,9 +49,10 @@ async function restore() {
 // ---------- startup ----------
 let saved = null; try { saved = JSON.parse(localStorage.getItem('rose:project') || 'null'); } catch { }
 if (saved?.tracks) { $('#startLabel').textContent = 'Continue your song'; $('#startSub').textContent = saved.name || 'Pick up where you left off'; }
-async function boot(mode) {
+async function boot(mode, tpl) {
   await E.start(); await restore();
-  if (mode === 'blank') { E.p = blankProject(); E.p.audio = {}; } else if (mode === 'demo' && !saved?.tracks) { E.p = newProject(); E.p.audio = {}; }
+  if (mode === 'blank') { E.p = blankProject(); E.p.audio = {}; }
+  else if (mode === 'template') { E.p = projectFromTemplate(tpl); E.p.audio = {}; } else if (mode === 'demo' && !saved?.tracks) { E.p = newProject(); E.p.audio = {}; }
   await E.rebuild(); UI.track = P().tracks[0]?.id; UI.dev = { kind: 'track', id: UI.track };
   $('#startScreen').remove(); try { UI.lib = localStorage.getItem('rose:lib') !== '0'; } catch { UI.lib = true; }
   $('#lib').hidden = !UI.lib; renderLib(); render(); initMIDI(); requestAnimationFrame(frame); persist();
@@ -62,6 +63,27 @@ async function boot(mode) {
 $('#bStart').onclick = () => boot('demo');
 $('#bBlank').onclick = () => boot('blank');
 $('#bOpenStart').onclick = () => boot('open');
+// ---------- templates (shared with the desktop app) ----------
+let TEMPLATES = null;
+async function templates() {
+  if (!TEMPLATES) try { TEMPLATES = (await (await fetch('templates/templates.json')).json()).templates; } catch { TEMPLATES = []; }
+  return TEMPLATES;
+}
+const tplList = list => `<div class="tpl">${list.map(t => `<button data-tpl="${t.id}"><b>${esc(t.name)}</b><span>${esc(t.desc)}</span><i>${t.bpm} BPM · ${t.tracks.length} tracks</i></button>`).join('')}</div>`;
+$('#bTplStart').onclick = async () => {
+  const box = $('#startScreen .choices'); box.outerHTML = tplList(await templates()) + '<button class="tb" id="tplBack" style="margin-top:10px">Back</button>';
+  $('#tplBack').onclick = () => location.reload();
+  $('#startScreen').onclick = e => { const b = e.target.closest('[data-tpl]'); if (b) { b.querySelector('b').textContent = 'Loading sounds…'; boot('template', TEMPLATES.find(t => t.id === b.dataset.tpl)); } };
+};
+async function newFromTemplate() {
+  closePops(); dialog('New song from a template', '<p class="small" style="margin:0 0 10px">Tracks, instruments, vocal chains and a starter idea — your current song stays in Undo.</p>' + tplList(await templates()));
+  $('.help .tpl').onclick = async e => {
+    const b = e.target.closest('[data-tpl]'); if (!b) return; b.querySelector('b').textContent = 'Loading sounds…';
+    snapshot(); E.stop(); E.p = projectFromTemplate(TEMPLATES.find(t => t.id === b.dataset.tpl)); E.p.audio = {};
+    UI.track = P().tracks[0].id; UI.dev = { kind: 'track', id: UI.track }; UI.clip = null; await commit(true); $('.help')?.remove(); toast(`${P().name} template ready — press Space`);
+  };
+}
+$('#bTpl').onclick = newFromTemplate;
 
 // ---------- transport ----------
 $('#bPlay').onclick = () => E.playing ? E.stop(true) : E.play();
@@ -101,6 +123,7 @@ async function addTrackOf(v, opts = {}) {
   snapshot();
   const n = P().tracks.filter(t => (t.inst || t.kind) === (v === 'audio' ? 'audio' : v)).length + 1;
   const t = newTrack(v === 'audio' ? 'audio' : v === 'group' ? 'group' : 'inst', v === 'audio' || v === 'group' ? null : v, n); if (opts.preset) { Object.assign(t.instParams, SYNTH_PRESETS[opts.preset], { preset: opts.preset }); t.name = opts.preset; }
+  if (v === 'sounds') { t.instParams.patch = opts.patch || 'Grand Piano'; t.name = t.instParams.patch; }
   if (v === 'drums') t.clips.push({ id: uid(), name: 'Beat', start: Math.floor((P().cursor || 0) / P().sig) * P().sig, len: 4, notes: [] });
   P().tracks.push(t); UI.track = t.id; UI.dev = { kind: 'track', id: t.id }; UI.clip = t.clips[0]?.id || null; await commit(true);
   toast(v === 'group' ? 'Group bus added — in the Mixer, set other tracks’ Out to it' : v === 'audio' ? 'Audio track added — arm ● and press Record, or drop a file on it' : v === 'drums' ? 'Drum track added — click the steps below to make a beat' : 'Track added — double-click its lane to draw notes');
@@ -575,7 +598,8 @@ function renderDevices() {
     h += `<div class="dev ${s.bypass ? 'off' : ''}" data-slot="${s.id}"><h4><span class="t" title="${esc(s.url || '')}">${esc(def?.name || s.type)}</span><button data-a="float" title="Open in a floating window that stays on top">Float</button><button data-a="byp" title="Bypass">${s.bypass ? 'Off' : 'On'}</button><button data-a="l" title="Move left" ${i ? '' : 'disabled'}>‹</button><button data-a="r" title="Move right" ${i < o.inserts.length - 1 ? '' : 'disabled'}>›</button><button data-a="x" title="Remove">×</button></h4>`;
     if (s.type === 'eq') h += `<canvas class="eqc" data-eq="${s.id}"></canvas>`;
     if (s.type === 'analyzer') h += `<canvas class="eqc" data-an="${s.id}" style="height:140px"></canvas>`;
-    if (s.type === 'comp' || s.type === 'limiter' || s.type === 'sccomp') h += `<div style="font-size:11px;color:var(--mute);padding:6px 10px 2px">Gain reduction</div><div class="gr"><i data-gr="${s.id}"></i></div>`;
+    if (s.type === 'tune') h += `<div class="tunerd"><b data-tune="${s.id}">–</b><span>input pitch, live</span></div>`;
+    if (s.type === 'comp' || s.type === 'limiter' || s.type === 'sccomp' || s.type === 'deesser') h += `<div style="font-size:11px;color:var(--mute);padding:6px 10px 2px">Gain reduction</div><div class="gr"><i data-gr="${s.id}"></i></div>`;
     if (s.type === 'wam') h += `<div class="ps"><button class="tb" data-a="gui">Open plugin window</button></div>`;
     h += `<div class="ps">${def ? paramsHtml(def.params, s.params, s.id) : ''}</div></div>`;
   });
@@ -737,6 +761,8 @@ function renderPlugins() {
   $('#plugins').innerHTML = `<div class="doc">
   <h3>Built-in devices</h3><p>${Object.keys(EFFECTS).length} effects — ${Object.values(EFFECTS).map(e => e.name).join(', ')} — plus Rose Synth (${Object.keys(SYNTH_PRESETS).length} presets), Rose Drums and Rose Sampler. Add them from the <b>Library</b> or the <b>Sound & FX</b> tab. Two return buses (reverb and delay) are fed by each track's A/B sends in the <b>Mixer</b>.</p>
   <h3>VST3 and AU plugins (Serum, FabFilter, Softube Flow, Google Flow Music, Valhalla…)</h3><p>Browsers can't run VST3 or AU plugins — no web DAW can. Use the <b>Rose desktop app</b> in this repo's <code>native/</code> folder: it scans and loads every VST3 and AU plugin on your Mac, including the plugins you use in FL Studio, Logic and Ableton. Stock devices that live inside those apps (FL's Fruity plugins, Logic's ChromaVerb, Ableton's devices) only run inside their own app.</p>
+  <h3>Real instruments and templates</h3><p><b>Rose Sounds</b> plays ${SOUND_LIB.length} sampled instruments — ${SOUND_LIB.map(x => x.name).join(', ')} — from the open-source FluidR3 General MIDI set by Frank Wen (MIT licence; recordings rendered by the midi-js-soundfonts project, CC BY 3.0). <b>File → New from template</b> starts an EDM, pop, trap, R&B, simcha, singer-songwriter, orchestral or podcast session, with the same templates in the desktop app.</p>
+  <h3>Free open-source plugins for the desktop app</h3><p>These are free, open-source VST3/AU instruments. Install one, then press <i>Scan plugins</i> in Rose Studio: <a href="https://surge-synthesizer.github.io/" target="_blank" rel="noopener">Surge XT</a> (huge hybrid synth), <a href="https://vital.audio/" target="_blank" rel="noopener">Vital</a> (wavetable, free tier), <a href="https://asb2m10.github.io/dexed/" target="_blank" rel="noopener">Dexed</a> (DX7 FM), <a href="https://github.com/reales/OB-Xd" target="_blank" rel="noopener">OB-Xd</a> (Oberheim-style analog), <a href="https://thewavewarden.com/odin2" target="_blank" rel="noopener">Odin 2</a> and <a href="https://tytel.org/helm/" target="_blank" rel="noopener">Helm</a>. They're linked rather than built in because their GPL licences don't allow bundling them inside Rose.</p>
   <h3>SHRUB (Xfer's free Serum for the FM-1)</h3><p><b>Desktop app:</b> install the SHRUB VST3 from shrub.audio, then use <i>Scan plugins</i> in Rose — it loads like any instrument. <b>Browser:</b> add an <b>External MIDI</b> track (+ Track menu) and pick a MIDI output. To play the SHRUB browser editor, turn on the Mac's IAC Driver (Audio MIDI Setup → MIDI Studio → IAC Driver → Device is online), choose it here and as "MIDI in" in the SHRUB editor. An FM-1 running SHRUB shows up directly over USB. Use <b>Export .mid</b> on any MIDI clip to take parts anywhere.</p>
   <h3>Web plugins (WAM 2)</h3><p>The browser version can load Web Audio Modules — the web's plugin standard. Paste a plugin's <code>index.js</code> address in <b>Sound & FX → Add effect</b>, or below to add it to the selected chain. Web plugins play live but are skipped in WAV export.</p>
   <div class="wamrow"><input id="wamUrl2" placeholder="https://…/index.js" aria-label="Web plugin URL"><button id="wamAdd2">Add to ${esc(devOwner()?.name || 'Master')}</button></div>
@@ -834,11 +860,16 @@ function setTool(t) { UI.tool = t; $('#tSel').classList.toggle('on', t === 'sele
 $('#tSel').onclick = () => setTool('select'); $('#tSplit').onclick = () => setTool('split');
 
 // ---------- install, download, about ----------
-export const VERSION = '1.1.0';
+export const VERSION = '1.2.0';
 let installEvt = null;
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; });
 addEventListener('appinstalled', () => toast('Rose is installed — open it from your Dock, Launchpad or Start menu'));
-if ('serviceWorker' in navigator && location.protocol === 'https:' && !/claude\.ai|claudeusercontent/.test(location.hostname)) navigator.serviceWorker.register('sw.js').catch(() => { });
+if ('serviceWorker' in navigator && location.protocol === 'https:' && !/claude\.ai|claudeusercontent/.test(location.hostname)) navigator.serviceWorker.register('sw.js').then(reg => {
+  // installed web app: when a new version is published, offer a one-click reload
+  const had = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (had) toast('Rose was updated — press Ctrl+S if needed, then reload to use the new version'); });
+  setInterval(() => reg.update().catch(() => { }), 30 * 60 * 1000);
+}).catch(() => { });
 const DL = 'https://github.com/mosheshlomorosenfeld-alt/Rose/releases/latest';
 $('#bInstall').onclick = async () => {
   if (installEvt) { installEvt.prompt(); const r = await installEvt.userChoice; installEvt = null; if (r.outcome === 'accepted') return; }
@@ -850,8 +881,9 @@ $('#bInstall').onclick = async () => {
 $('#bDownload').onclick = () => dialog('Rose desktop app', `<p>The desktop version runs your real <b>VST3 and Audio Unit plugins</b> (Serum, SHRUB, FabFilter, Softube Flow, Google Flow Music…).</p>
   <p><a class="tb accent" href="${DL}/download/Rose-mac.zip" target="_blank" rel="noopener">Download for Mac</a> <a class="tb" href="${DL}/download/Rose-windows.zip" target="_blank" rel="noopener">Download for Windows</a></p>
   <p style="font-size:13px"><a href="download.html" target="_blank" rel="noopener">Full download page</a> · <code>${DL}</code><br>Mac first launch: unzip, drag Rose to Applications, then right-click Rose → <i>Open</i> → <i>Open</i> (it isn't signed with an Apple developer certificate yet).</p>`);
-$('#bAbout').onclick = () => dialog('Rose Studio', `<div style="display:flex;gap:16px;align-items:center"><img src="icons/icon-192.png" width="72" height="72" alt="" style="border-radius:16px"><div><b style="font-size:17px">Rose Studio ${VERSION}</b><br><span style="color:var(--mute)">Rosenfeld Productions, TABC Studio 1600</span></div></div>
-  <p>${Object.keys(EFFECTS).length} effects and ${Object.keys(INSTRUMENTS).length} instruments, automation, a clip launcher, linked patterns, an arpeggiator and chord pads, sidechain and group buses, Strip Silence, and WAV and MIDI export.</p>
+$('#bAbout').onclick = () => dialog('Rose Studio', `<div style="display:flex;gap:16px;align-items:center"><img src="icons/icon-192.png" width="72" height="72" alt="" style="border-radius:16px"><div><b style="font-size:17px">Rose Studio ${VERSION}</b><br><span style="color:var(--mute)">by Moshe Rosenfeld</span></div></div>
+  <p>${Object.keys(EFFECTS).length} effects including Rose Tune pitch correction and vocal tools, ${SOUND_LIB.length} sampled instruments plus synth, drums and sampler, song templates, automation, a clip launcher, linked patterns, an arpeggiator and chord pads, sidechain and group buses, Strip Silence, and WAV and MIDI export.</p>
+  <p style="color:var(--mute);font-size:13px">Rose Sounds: FluidR3 GM SoundFont by Frank Wen (MIT), rendered by midi-js-soundfonts (CC BY 3.0).</p>
   <p style="color:var(--mute);font-size:13px">Desktop app with VST3/AU hosting: File → Download desktop app.</p>`);
 function dialog(title, html) {
   $('.help')?.remove(); const d = document.createElement('div'); d.className = 'help';
@@ -908,15 +940,18 @@ function goToBar() {
 
 // ---------- library ----------
 const PRESET_INFO = { 'Supersaw Lead': 'Big EDM lead', 'Pluck': 'Short, bouncy pluck', 'Warm Pad': 'Soft chords that swell', 'Sub Bass': 'Deep, clean low end', 'Reese Bass': 'Wide, gritty bass', 'Keys': 'Electric-piano style', 'Chip Square': '8-bit game sound', 'Brass': 'Punchy stabs' };
-const FX_INFO = { eq: 'Shape the tone', filter: 'Sweeps & wobbles', comp: 'Even out levels, add punch', limiter: 'Make it loud, stop clipping', gate: 'Cut background noise', reverb: 'Room & space', delay: 'Echoes in time', chorus: 'Thicker, wider', flanger: 'Jet-plane swoosh', phaser: 'Swirling movement', tremolo: 'Volume / pan wobble', pump: 'EDM sidechain pump', distortion: 'Grit & warmth', crusher: 'Lo-fi crunch', width: 'Wider stereo', utility: 'Gain, mono, phase' };
+const FX_INFO = { eq: 'Shape the tone', filter: 'Sweeps & wobbles', comp: 'Even out levels, add punch', limiter: 'Make it loud, stop clipping', gate: 'Cut background noise', reverb: 'Room & space', delay: 'Echoes in time', chorus: 'Thicker, wider', flanger: 'Jet-plane swoosh', phaser: 'Swirling movement', tremolo: 'Volume / pan wobble', pump: 'EDM sidechain pump', distortion: 'Grit & warmth', crusher: 'Lo-fi crunch', width: 'Wider stereo', utility: 'Gain, mono, phase', tune: 'Pitch correction — set key & scale', deesser: 'Tame harsh S sounds', harmonizer: 'Instant 2-part harmonies', doubler: 'Double-tracked, wider vocal', pitch: 'Shift pitch up or down' };
 function renderLib() {
   const t = trk(UI.track);
   const onT = t && t.kind === 'inst' ? esc(t.name) : 'an instrument track';
-  $('#lib').innerHTML = `<h5>Instruments</h5><div class="chips2">${Object.keys(SYNTH_PRESETS).map(n => `<button data-preset="${esc(n)}" title="${PRESET_INFO[n] || ''}">${esc(n)}</button>`).join('')}
+  $('#lib').innerHTML = `<h5>Templates</h5><div class="chips2"><button data-tplopen="1" class="wide" title="EDM, pop, trap, R&B, simcha, orchestral, podcast…">New song from a template</button></div>
+    <h5>Real instruments</h5><div class="chips2">${SOUND_LIB.map(x => `<button data-sound="${esc(x.name)}" title="${x.cat} — sampled, open source">${esc(x.name)}</button>`).join('')}</div>
+    <h5>Synth presets</h5><div class="chips2">${Object.keys(SYNTH_PRESETS).map(n => `<button data-preset="${esc(n)}" title="${PRESET_INFO[n] || ''}">${esc(n)}</button>`).join('')}
     <button data-addk="drums" title="Step-sequencer beat">Drum kit</button><button data-addk="sampler" title="Play any sound across the keyboard">Sampler</button><button data-addk="external" class="wide" title="Play SHRUB, an FM-1 or hardware">External MIDI</button></div>
     <h5>Patterns</h5><div class="chips2">${Object.entries(P().patterns || {}).map(([id, pt]) => `<button data-pat="${id}" title="${pt.len} beats — click to place on ${onT}">⧉ ${esc(pt.name)}</button>`).join('')}<button data-newpat="1" title="A linked clip you can paint across the song">+ New</button></div>
     <h5>MIDI tools</h5><div class="chips2"><button data-midi="arp" title="Turn held chords into arpeggios">Arpeggiator</button><button data-midi="chord" title="Play full chords from single notes">Chord maker</button><button data-midi="pads" class="wide" title="Click chords in any key">Chord pads</button></div>
-    <h5>Effects${t ? ' → ' + esc(t.name) : ''}</h5><div class="chips2">${Object.entries(EFFECTS).map(([k, d]) => `<button data-fx="${k}" title="${FX_INFO[k] || d.cat}">${esc(d.name.replace(/^(Parametric|Sidechain|Spectrum|Stereo|Tremolo \/) ?/, m => m === 'Parametric ' ? '' : m))}</button>`).join('')}</div>
+    <h5>Vocal tools${t ? ' → ' + esc(t.name) : ''}</h5><div class="chips2"><button data-chain="vocal" class="wide" title="Rose Tune → EQ → De-esser → Compressor, plus reverb send">Vocal chain (one click)</button>${['tune', 'deesser', 'harmonizer', 'doubler', 'pitch'].map(k => `<button data-fx="${k}" title="${FX_INFO[k]}">${esc(EFFECTS[k].name)}</button>`).join('')}</div>
+    <h5>Effects${t ? ' → ' + esc(t.name) : ''}</h5><div class="chips2">${Object.entries(EFFECTS).filter(([, d]) => d.cat !== 'Vocal').map(([k, d]) => `<button data-fx="${k}" title="${FX_INFO[k] || d.cat}">${esc(d.name.replace(/^(Parametric|Sidechain|Spectrum|Stereo|Tremolo \/) ?/, m => m === 'Parametric ' ? '' : m))}</button>`).join('')}</div>
     <h5>Mixing</h5><div class="chips2"><button data-addk="group" class="wide" title="Mix several tracks together">Group bus</button></div>`;
 }
 $('#lib').addEventListener('click', async e => {
@@ -931,6 +966,20 @@ $('#lib').addEventListener('click', async e => {
     UI.dev = { kind: 'track', id: t.id }; persist(); setTab('devices'); document.getElementById(b.dataset.midi === 'pads' ? 'padsCard' : 'midiCard')?.scrollIntoView({ inline: 'start', block: 'nearest' });
     toast(b.dataset.midi === 'pads' ? 'Chord pads — click a chord to play it' : b.dataset.midi === 'arp' ? 'Arpeggiator on — hold a chord on your keyboard, or play a clip' : 'Chord maker on — one key now plays a full chord');
   } else if (b.dataset.addk) await addTrackOf(b.dataset.addk);
+  else if (b.dataset.tplopen) newFromTemplate();
+  else if (b.dataset.sound) {
+    const name = b.dataset.sound;
+    if (t && t.inst === 'sounds') { snapshot(); t.instParams.patch = name; if (SOUND_LIB.some(x => x.name === t.name)) t.name = name; E.setInstParam(t.id, 'patch', name); persist(); render(); toast(`Loading ${name}…`); await E.g?.tracks.get(t.id)?.inst?.ready; toast(`${name} on ${t.name}`); E.liveOn(t.id, 60, 0.8); setTimeout(() => E.liveOff(t.id, 60), 500); }
+    else { const nt = await addTrackOf('sounds', { patch: name }); toast(`${name} added — play the A to ; keys`); }
+  } else if (b.dataset.chain) {
+    if (!t) return toast('Select a vocal track first'); snapshot();
+    const key = t.inserts.find(s => s.type === 'tune')?.params.key || 'C';
+    const add = (type, params) => t.inserts.push({ id: uid(), type, params, bypass: false });
+    if (!t.inserts.some(s => s.type === 'tune')) add('tune', { key, scale: 'Major', speed: 20 });
+    const has = k => t.inserts.some(s => s.type === k);
+    if (!has('eq')) add('eq', { hp: 90, m1f: 300, m1g: -2, hsg: 2.5 }); if (!has('deesser')) add('deesser', { threshold: -32 }); if (!has('comp')) add('comp', { threshold: -22, ratio: 3.5, attack: 0.006, release: 0.12, makeup: 4 });
+    t.sends.A = Math.max(t.sends.A || 0, 0.25); UI.dev = { kind: 'track', id: t.id }; await commit(true); setTab('devices'); toast('Vocal chain added — set Rose Tune to your song’s key');
+  }
   else if (b.dataset.pat || b.dataset.newpat) {
     if (!t || t.kind !== 'inst') return toast('Select an instrument or drum track first');
     snapshot(); let id = b.dataset.pat; if (!id) { id = uid(); P().patterns[id] = { name: 'Pattern ' + (Object.keys(P().patterns).length + 1), len: 4, notes: [] }; }
@@ -952,6 +1001,8 @@ function showHelp() {
   <div class="cols"><div><h3>Make a beat</h3><ol><li>Add track → <b>Drums</b></li><li>Click the squares in the Editor below — each column is a 16th note</li><li>Shift-click a square for a louder hit</li><li>Press <kbd>Space</kbd> to hear it loop</li></ol>
   <h3>Play &amp; record notes</h3><ol><li>Pick an instrument in the Library</li><li>Play with your keyboard: <kbd>A</kbd>–<kbd>;</kbd> (<kbd>Z</kbd>/<kbd>X</kbd> change octave) or a MIDI keyboard</li><li>Click ● on the track, then Record (<kbd>R</kbd>)</li><li>Or double-click a lane and click in the piano roll to draw notes</li></ol></div>
   <div><h3>Record vocals</h3><ol><li>Add track → <b>Audio / vocals</b></li><li>Click ● on it, then Record — allow the microphone</li><li>Stop with <kbd>Space</kbd>; your take appears as a clip</li></ol>
+  <h3>Tune &amp; polish vocals</h3><ol><li>Library → <b>Vocal chain (one click)</b> on the vocal track</li><li>In <b>Rose Tune</b> set Key and Scale; Retune speed 0 ms = hard T-Pain snap, 20–40 ms = natural pop</li><li>Add <b>Harmonizer</b> or <b>Vocal Doubler</b> for instant stacks</li></ol>
+  <h3>Start fast</h3><ol><li>File → <b>New from template</b>: EDM, pop, trap, R&amp;B, simcha, orchestral, podcast</li><li>Library → <b>Real instruments</b> for piano, strings, choir, brass and more</li></ol>
   <h3>Mix &amp; finish</h3><ol><li><b>Sound &amp; FX</b>: add effects (try Compressor, then Reverb)</li><li><b>Mixer</b>: faders, pan, and A/B sends to the reverb &amp; delay buses</li><li>File → <b>Export WAV</b> to share your song</li></ol></div></div>
   <div class="cols"><div><h3>Automation</h3><ol><li>Click <b>A</b> on a track</li><li>Pick what to automate (volume, pan, sends or any effect knob)</li><li>Click the lane to add points, drag to shape, double-click to remove</li></ol>
   <h3>Patterns (FL Studio style)</h3><ol><li>Library → <b>+ New pattern</b>, or “Make pattern” on a clip</li><li>Click the pattern in the Library to paint copies — edit one, they all change</li></ol></div>
@@ -1036,6 +1087,11 @@ function frame() {
     if (UI.tab === 'mixer' && $('#spec')) spectrum($('#spec'), E.g.analyser);
     if (UI.tab === 'devices') document.querySelectorAll('[data-an]').forEach(cv => { const n = E.stripFor(UI.dev.kind, UI.dev.id)?.fx.find(f => f.slot.id === cv.dataset.an)?.node; if (n?.analyser) spectrum(cv, n.analyser); });
     if (UI.tab === 'mixer') document.querySelectorAll('#mixer .ch').forEach(ch => { const s = E.stripFor(ch.dataset.kind, ch.dataset.id); if (s) meterDraw(ch.querySelector('.mtr'), peak(s.meter)); });
+    if (UI.tab === 'devices') document.querySelectorAll('[data-tune]').forEach(el => {
+      const f = E.stripFor(UI.dev.kind, UI.dev.id)?.fx.find(f => f.slot.id === el.dataset.tune)?.node, hz = f?.readout?.() || 0;
+      if (!hz) { el.textContent = '–'; return; } const m = 69 + 12 * Math.log2(hz / 440), n = Math.round(m), c = Math.round((m - n) * 100);
+      el.textContent = `${NOTE_NAMES[(n % 12 + 12) % 12]}${Math.floor(n / 12) - 1} ${c >= 0 ? '+' : '−'}${Math.abs(c)}¢`;
+    });
     if (UI.tab === 'devices') document.querySelectorAll('[data-gr]').forEach(el => { const f = E.stripFor(UI.dev.kind, UI.dev.id)?.fx.find(f => f.slot.id === el.dataset.gr)?.node; if (f?.meter) el.style.width = Math.min(100, -f.meter() * 5) + '%'; });
   }
   if (E.playing) {

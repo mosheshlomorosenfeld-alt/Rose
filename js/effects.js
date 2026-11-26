@@ -25,7 +25,39 @@ class RoseSC extends AudioWorkletProcessor{
       const lv=20*Math.log10(this.env+1e-9),over=lv-th,red=over>0?over*(1-1/ra):0;mx=Math.max(mx,red);const g=Math.pow(10,-red/20)*mk;
       for(let c=0;c<out.length;c++)out[c][n]=(inp[c]||inp[0])[n]*g}
     this.gr=mx;return true}}
-registerProcessor('rose-gate',RoseGate);registerProcessor('rose-crush',RoseCrush);registerProcessor('rose-sc',RoseSC);`;
+registerProcessor('rose-gate',RoseGate);registerProcessor('rose-crush',RoseCrush);registerProcessor('rose-sc',RoseSC);
+// Rose pitch engine: YIN pitch detection + two-head crossfaded delay-line shifter. mode 0 = auto-tune to key/scale, 1 = fixed shift.
+const SCALES=[[0,1,2,3,4,5,6,7,8,9,10,11],[0,2,4,5,7,9,11],[0,2,3,5,7,8,10],[0,2,3,5,7,8,11],[0,1,4,5,7,8,10],[0,2,4,7,9],[0,3,5,7,10],[0,3,5,6,7,10],[0,2,3,5,7,9,10],[0,2,4,5,7,9,10]];
+class RosePitch extends AudioWorkletProcessor{
+  static get parameterDescriptors(){return[{name:'mode',defaultValue:0},{name:'shift',defaultValue:0},{name:'speed',defaultValue:20},{name:'key',defaultValue:0},{name:'scale',defaultValue:0},{name:'humanize',defaultValue:0},{name:'detune',defaultValue:0}]}
+  constructor(){super();this.N=16384;this.buf=new Float32Array(this.N);this.w=0;this.ph=0;this.ratio=1;this.target=1;this.Wn=Math.round(sampleRate*0.04);this.W=this.Wn;this.Wt=this.Wn;
+    this.dl=new Float32Array(2048);this.dn=0;this.dn0=0;this.acc=0;this.hop=0;this.f0=0;this.yin=new Float32Array(1024);this.port.onmessage=()=>this.port.postMessage(this.f0)}
+  detect(){const x=this.dl,W=1024,sr=sampleRate/2,tmin=Math.floor(sr/1000),tmax=Math.min(Math.floor(sr/65),W-1);if(this.dn<W+tmax)return 0;
+    const st=(this.dn0-W-tmax+2048*8)%2048;let rms=0;for(let i=0;i<W;i++){const v=x[(st+i)%2048];rms+=v*v}if(Math.sqrt(rms/W)<0.006)return 0;
+    const d=this.yin;let run=0,best=-1;d[0]=1;
+    for(let t=1;t<=tmax;t++){let s=0;for(let i=0;i<W;i++){const a=x[(st+i)%2048]-x[(st+i+t)%2048];s+=a*a}run+=s;d[t]=run>0?s*t/run:1;
+      if(t>tmin+1&&d[t-1]<0.15&&d[t]>d[t-1]){best=t-1;break}}
+    if(best<1)return 0;const a=d[best-1],b=d[best],c=d[best+1],den=a-2*b+c,tt=den?best+0.5*(a-c)/den:best;return sr/tt}
+  process(i,o,p){const inp=i[0],out=o[0];if(!out.length)return true;const L=out[0].length,N=this.N;
+    const mode=p.mode[0],sh=Math.pow(2,(p.shift[0]+p.detune[0]/100)/12),sp=Math.max(0,p.speed[0]);const k=sp<=0.5?0:Math.exp(-1/(sp*sampleRate/1000));
+    for(let n=0;n<L;n++){let v=0;if(inp.length){for(let c=0;c<inp.length;c++)v+=inp[c][n];v/=inp.length}
+      this.buf[this.w]=v;this.acc+=v;
+      if(n&1){this.dl[this.dn0]=this.acc*0.5;this.dn0=(this.dn0+1)%2048;this.dn++;this.acc=0}
+      if(++this.hop>=512){this.hop=0;const f=this.detect();this.f0=f;
+        if(f>0){const T=sampleRate/f;this.Wt=2*Math.max(1,Math.round(this.Wn/2/T))*T}
+        if(mode<0.5&&f>0){const m=69+12*Math.log2(f/440),key=Math.round(p.key[0]),sc=SCALES[Math.max(0,Math.min(SCALES.length-1,Math.round(p.scale[0])))];
+          let bestN=m,bd=99;for(let oc=-1;oc<=1;oc++)for(const s of sc){const cand=(Math.floor((m-key)/12)+oc)*12+key+s,dd=Math.abs(cand-m);if(dd<bd){bd=dd;bestN=cand}}
+          let cents=(bestN-m)*100;const hz=p.humanize[0];cents=Math.sign(cents)*Math.max(0,Math.abs(cents)-hz);this.target=Math.pow(2,cents/1200)}
+        else if(mode<0.5)this.target=1}
+      if(mode>=0.5)this.target=1;
+      this.ratio=k?k*this.ratio+(1-k)*this.target:this.target;const r=this.ratio*sh;
+      this.W+=(this.Wt-this.W)*0.0005;const W=this.W;
+      this.ph+=(1-r)/W;if(Math.abs(1-r)<0.0003){const tgt=this.ph<0.25?0:this.ph<0.75?0.5:1;this.ph+=(tgt-this.ph)*0.00005}this.ph-=Math.floor(this.ph);
+      const p2=(this.ph+0.5)%1,g1=0.5-0.5*Math.cos(2*Math.PI*this.ph),g2=1-g1;
+      const b=this.buf;let pos=this.w-(this.ph*W+2)+N,i0=Math.floor(pos),fr=pos-i0;let y=g1*(b[i0%N]*(1-fr)+b[(i0+1)%N]*fr);pos=this.w-(p2*W+2)+N;i0=Math.floor(pos);fr=pos-i0;y+=g2*(b[i0%N]*(1-fr)+b[(i0+1)%N]*fr);
+      this.w=(this.w+1)%N;for(let c=0;c<out.length;c++)out[c][n]=y}
+    return true}}
+registerProcessor('rose-pitch',RosePitch);`;
 
 const loaded = new WeakSet();
 export async function prepareWorklets(ctx) {
@@ -82,7 +114,113 @@ function curve(kind, drive) {
   return c;
 }
 
+export const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+export const SCALE_NAMES = ['Chromatic', 'Major', 'Minor', 'Harmonic minor', 'Freygish (Ahava Raba)', 'Major pentatonic', 'Minor pentatonic', 'Blues', 'Dorian', 'Mixolydian'];
+const HARM = ['Off', '-12 octave down', '-7 fifth down', '-5 fourth down', '-3 minor 3rd down', '+3 minor 3rd', '+4 major 3rd', '+5 fourth', '+7 fifth', '+9 sixth', '+12 octave'];
+
 export const EFFECTS = {
+
+  // ---------- vocal tools ----------
+  tune: {
+    name: 'Rose Tune', cat: 'Vocal',
+    params: [S('key', 'Key', NOTE_NAMES, 'C'), S('scale', 'Scale', SCALE_NAMES, 'Chromatic'), R('speed', 'Retune speed', 0, 400, 20, 1, 'ms'),
+      R('humanize', 'Humanize', 0, 50, 0, 1, '¢'), R('shift', 'Transpose', -12, 12, 0, 1, 'st'), R('detune', 'Fine', -100, 100, 0, 1, '¢'), R('mix', 'Mix', 0, 1, 1)],
+    build(ctx) {
+      // Speed 0 = the hard, robotic snap; 10–40 ms = natural pop tuning; 100 ms+ = gentle correction.
+      const m = mixer(ctx), w = worklet(ctx, 'rose-pitch'); let f0 = 0;
+      if (w) { m.input.connect(w).connect(m.wet); w.port.onmessage = e => { f0 = e.data; }; } else m.input.connect(m.wet);
+      // the shifter delays the wet signal ~25 ms, so the dry path is delayed to match (no phasing in parallel mixes)
+      const dd = ctx.createDelay(0.2); dd.delayTime.value = 0.022; m.input.disconnect(m.dry); m.input.connect(dd).connect(m.dry); m.mix(1);
+      const prm = id => w?.parameters.get(id);
+      return {
+        input: m.input, output: m.output,
+        set(id, v) { if (id === 'mix') m.mix(v); else if (id === 'key') prm('key') && (prm('key').value = Math.max(0, NOTE_NAMES.indexOf(v))); else if (id === 'scale') prm('scale') && (prm('scale').value = Math.max(0, SCALE_NAMES.indexOf(v))); else prm(id) && (prm(id).value = v); },
+        readout() { w?.port.postMessage(0); return f0; },
+        dispose() { [m.input, m.output, dd, w].forEach(n => n && n.disconnect()); }
+      };
+    }
+  },
+  pitch: {
+    name: 'Pitch Shifter', cat: 'Vocal',
+    params: [R('shift', 'Pitch', -24, 24, 0, 1, 'st'), R('detune', 'Fine', -100, 100, 0, 1, '¢'), R('mix', 'Mix', 0, 1, 1)],
+    build(ctx) {
+      const m = mixer(ctx), w = worklet(ctx, 'rose-pitch'); if (w) { w.parameters.get('mode').value = 1; m.input.connect(w).connect(m.wet); } else m.input.connect(m.wet); m.mix(1);
+      return { input: m.input, output: m.output, set(id, v) { if (id === 'mix') m.mix(v); else w && (w.parameters.get(id).value = v); }, dispose() { [m.input, m.output, w].forEach(n => n && n.disconnect()); } };
+    }
+  },
+  harmonizer: {
+    name: 'Harmonizer', cat: 'Vocal',
+    params: [S('v1', 'Voice 1', HARM, '+4 major 3rd'), R('l1', 'Voice 1 level', 0, 1, 0.6), R('p1', 'Voice 1 pan', -1, 1, -0.5),
+      S('v2', 'Voice 2', HARM, '+7 fifth'), R('l2', 'Voice 2 level', 0, 1, 0.5), R('p2', 'Voice 2 pan', -1, 1, 0.5),
+      R('detune', 'Spread', 0, 30, 8, 1, '¢'), R('mix', 'Harmony level', 0, 1, 0.5)],
+    build(ctx) {
+      // Two pitch-shifted voices panned left/right under the lead. The dry lead stays centred and untouched.
+      const input = ctx.createGain(), output = ctx.createGain(), bus = ctx.createGain(); input.connect(output); bus.connect(output);
+      const voice = () => { const w = worklet(ctx, 'rose-pitch'), g = ctx.createGain(), pn = ctx.createStereoPanner(); if (w) { w.parameters.get('mode').value = 1; input.connect(w).connect(g); } g.connect(pn).connect(bus); return { w, g, pn }; };
+      const vs = [voice(), voice()]; const st = { detune: 8 };
+      const semis = v => v === 'Off' ? null : parseInt(v, 10);
+      return {
+        input, output,
+        set(id, v) {
+          const k = +id.slice(1) - 1;
+          if (id === 'mix') smooth(bus.gain, v, ctx);
+          else if (id === 'detune') { st.detune = v; vs.forEach((x, i) => x.w && (x.w.parameters.get('detune').value = i ? v : -v)); }
+          else if (id[0] === 'v') { const s = semis(v); vs[k].off = s == null; if (vs[k].w && s != null) vs[k].w.parameters.get('shift').value = s; smooth(vs[k].g.gain, s == null ? 0 : vs[k].lvl ?? 0.6, ctx); }
+          else if (id[0] === 'l') { vs[k].lvl = v; smooth(vs[k].g.gain, vs[k].off ? 0 : v, ctx); }
+          else if (id[0] === 'p') smooth(vs[k].pn.pan, v, ctx);
+        },
+        dispose() { [input, output, bus, ...vs.flatMap(x => [x.w, x.g, x.pn])].forEach(n => n && n.disconnect()); }
+      };
+    }
+  },
+  deesser: {
+    name: 'De-esser', cat: 'Vocal',
+    params: [R('freq', 'Frequency', 3000, 12000, 6500, 10, 'Hz', true), R('threshold', 'Threshold', -60, 0, -30, 0.1, 'dB'), R('amount', 'Max reduction', 0, 24, 12, 0.5, 'dB'), T('listen', 'Listen to S', false)],
+    build(ctx) {
+      // Split-band: everything below the crossover passes untouched; only the "ess" band is compressed.
+      const input = ctx.createGain(), output = ctx.createGain(), lo = ctx.createBiquadFilter(), hi = ctx.createBiquadFilter(), lo2 = ctx.createBiquadFilter(), hi2 = ctx.createBiquadFilter();
+      const c = ctx.createDynamicsCompressor(), lg = ctx.createGain();
+      lo.type = lo2.type = 'lowpass'; hi.type = hi2.type = 'highpass'; [lo, lo2, hi, hi2].forEach(f => { f.Q.value = 0.707; f.frequency.value = 6500; });
+      c.ratio.value = 12; c.attack.value = 0.001; c.release.value = 0.06; c.knee.value = 4;
+      input.connect(lo).connect(lo2).connect(lg).connect(output); input.connect(hi).connect(hi2).connect(c).connect(output);
+      const st = { amount: 12 };
+      return {
+        input, output,
+        set(id, v) {
+          if (id === 'freq') [lo, lo2, hi, hi2].forEach(f => smooth(f.frequency, v, ctx));
+          else if (id === 'threshold') smooth(c.threshold, v, ctx);
+          else if (id === 'amount') { st.amount = v; smooth(c.ratio, 1 + v, ctx); }
+          else if (id === 'listen') smooth(lg.gain, v ? 0 : 1, ctx);
+        },
+        meter: () => Math.max(c.reduction, -st.amount),
+        dispose() { [input, output, lo, hi, lo2, hi2, c, lg].forEach(n => n.disconnect()); }
+      };
+    }
+  },
+  doubler: {
+    name: 'Vocal Doubler', cat: 'Vocal',
+    params: [R('width', 'Width', 0, 1, 0.8), R('delay', 'Delay', 5, 40, 18, 0.5, 'ms'), R('detune', 'Detune', 0, 25, 9, 0.5, '¢'), R('mix', 'Double level', 0, 1, 0.45)],
+    build(ctx) {
+      // Two "second takes": slightly late, slightly out of tune, drifting, panned hard to each side.
+      const input = ctx.createGain(), output = ctx.createGain(), bus = ctx.createGain(); input.connect(output); bus.connect(output);
+      const side = (pan, rate) => {
+        const w = worklet(ctx, 'rose-pitch'), d = ctx.createDelay(0.1), pn = ctx.createStereoPanner(), l = lfo(ctx, rate, 0.0015);
+        if (w) { w.parameters.get('mode').value = 1; input.connect(w).connect(d); } else input.connect(d);
+        l.g.connect(d.delayTime); d.connect(pn).connect(bus); pn.pan.value = pan; return { w, d, pn, l, pan };
+      };
+      const L = side(-1, 0.31), Rr = side(1, 0.23);
+      return {
+        input, output,
+        set(id, v) {
+          if (id === 'mix') smooth(bus.gain, v, ctx);
+          else if (id === 'width') [L, Rr].forEach(x => smooth(x.pn.pan, x.pan * v, ctx));
+          else if (id === 'delay') { smooth(L.d.delayTime, v / 1000, ctx); smooth(Rr.d.delayTime, v / 1000 * 1.37, ctx); }
+          else if (id === 'detune') { L.w && (L.w.parameters.get('detune').value = v); Rr.w && (Rr.w.parameters.get('detune').value = -v); }
+        },
+        dispose() { [L, Rr].forEach(x => { x.l.o.stop(); [x.w, x.d, x.pn, x.l.g].forEach(n => n && n.disconnect()); }); [input, output, bus].forEach(n => n.disconnect()); }
+      };
+    }
+  },
   eq: {
     name: 'Parametric EQ', cat: 'EQ & Filter',
     params: [R('hp', 'Low cut', 20, 1000, 20, 1, 'Hz', true), R('lsf', 'Low freq', 40, 500, 120, 1, 'Hz', true), R('lsg', 'Low gain', -18, 18, 0, 0.1, 'dB'),

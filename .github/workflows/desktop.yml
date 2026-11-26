@@ -5,7 +5,7 @@ name: Build desktop app
 on:
   push:
     branches: [main]
-    paths: ["native/**", ".github/workflows/desktop.yml"]
+    paths: ["native/**", "sounds/**", "templates/**", ".github/workflows/desktop.yml"]
   workflow_dispatch:
 
 permissions:
@@ -27,11 +27,11 @@ jobs:
 
       - name: Configure (Mac, universal)
         if: matrix.name == 'mac'
-        run: cmake -S native -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+        run: cmake -S native -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" -DROSE_BUILD_NUMBER=${{ github.run_number }}
 
       - name: Configure (Windows)
         if: matrix.name == 'windows'
-        run: cmake -S native -B build
+        run: cmake -S native -B build -DROSE_BUILD_NUMBER=${{ github.run_number }}
 
       - name: Build
         run: cmake --build build --config Release --parallel 4
@@ -50,6 +50,7 @@ jobs:
           $exe = Get-ChildItem -Recurse build -Filter "Rose Studio.exe" | Select-Object -First 1
           New-Item -ItemType Directory -Force -Path "Rose Studio" | Out-Null
           Copy-Item $exe.FullName "Rose Studio/"
+          Copy-Item -Recurse sounds "Rose Studio/sounds"
           Compress-Archive -Path "Rose Studio" -DestinationPath Rose-windows.zip
 
       - uses: actions/upload-artifact@v4
@@ -73,10 +74,10 @@ jobs:
           make_latest: "true"
           fail_on_unmatched_files: false
           body: |
-            **Rose Studio desktop** — runs your VST3 and Audio Unit plugins.
+            **Rose Studio desktop** — runs your VST3 and Audio Unit plugins. Now with Rose Tune pitch correction, vocal tools, 14 real instruments, song templates and automatic updates.
 
             - **Mac** (Apple Silicon + Intel, macOS 11+): download `Rose-mac.zip`, unzip, drag **Rose Studio** to Applications, then right-click it → **Open** → **Open** the first time.
-            - **Windows** (10/11): download `Rose-windows.zip`, unzip, run **Rose Studio.exe**. If SmartScreen appears: **More info** → **Run anyway**.
+            - **Windows** (10/11): download `Rose-windows.zip`, unzip, keep the **sounds** folder next to it, run **Rose Studio.exe**. If SmartScreen appears: **More info** → **Run anyway**.
 
             Web version: https://mosheshlomorosenfeld-alt.github.io/Rose/
           files: |

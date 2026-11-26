@@ -1,4 +1,5 @@
 #include "MainComponent.h"
+#include "BinaryData.h"
 
 namespace rose
 {
@@ -457,14 +458,25 @@ static void addPluginItems (juce::PopupMenu& m, const juce::Array<juce::PluginDe
 }
 void DevicePanel::addEffectMenu()
 {
-    juce::PopupMenu m, built, plug; const auto types = engine.knownPlugins.getTypes();
-    int i = 1; for (auto& b : builtIns()) { if (! b.instrument) built.addItem (i, b.name); ++i; }
+    juce::PopupMenu m, built, vocal, plug; const auto types = engine.knownPlugins.getTypes();
+    static const juce::StringArray vocalIds { "tune", "deesser", "harmonizer", "doubler", "pitch" };
+    vocal.addItem (900, "Vocal chain (Tune, EQ, De-esser, Compressor, Reverb)"); vocal.addSeparator();
+    int i = 1; for (auto& b : builtIns()) { if (! b.instrument) (vocalIds.contains (b.id) ? vocal : built).addItem (i, b.name); ++i; }
     addPluginItems (plug, types, false, 1000);
-    m.addSubMenu ("Rose effects", built); m.addSubMenu ("VST3 / AU effects", plug);
+    m.addSubMenu ("Vocal tools", vocal); m.addSubMenu ("Rose effects", built); m.addSubMenu ("VST3 / AU effects", plug);
     m.showMenuAsync ({}, [this, types] (int r)
     {
         juce::String err;
-        if (r >= 1000) { const auto d = types[r - 1000]; err = engine.addInsert (chain(), {}, &d); }
+        if (r == 900)
+        {
+            auto& ch = chain(); auto has = [&] (const char* id) { for (auto& s : ch) if (s.builtInId == id) return true; return false; };
+            auto add = [&] (const char* id, std::initializer_list<std::pair<const char*, float>> ps)
+            { if (has (id) || engine.addInsert (ch, id, nullptr).isNotEmpty()) return; for (auto& [k, v] : ps) Engine::setParam (*ch.back().node->getProcessor(), k, v); };
+            add ("tune", { { "speed", 20.0f } }); add ("eq", { { "lc", 90.0f }, { "mf", 300.0f }, { "mg", -2.0f }, { "hsg", 2.5f } });
+            add ("deesser", { { "th", -32.0f } }); add ("comp", { { "th", -22.0f }, { "ra", 3.5f }, { "at", 6.0f }, { "re", 120.0f }, { "mk", 4.0f } });
+            add ("reverb", { { "sz", 0.55f }, { "mx", 0.15f } });
+        }
+        else if (r >= 1000) { const auto d = types[r - 1000]; err = engine.addInsert (chain(), {}, &d); }
         else if (r >= 1) err = engine.addInsert (chain(), builtIns()[(size_t) r - 1].id, nullptr);
         if (err.isNotEmpty()) juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Couldn't load plugin", err);
         refresh();
@@ -474,12 +486,16 @@ void DevicePanel::instrumentMenu()
 {
     if (engine.tracks.empty()) return;
     juce::PopupMenu m, plug; const auto types = engine.knownPlugins.getTypes();
-    m.addItem (1, "Rose Synth"); addPluginItems (plug, types, true, 1000); m.addSubMenu ("VST3 / AU instruments", plug);
+    juce::PopupMenu sounds; for (int k = 0; k < (int) soundLibrary().size(); ++k) sounds.addItem (100 + k, soundLibrary()[(size_t) k].name);
+    m.addItem (1, "Rose Synth"); m.addItem (2, "Rose Drums"); m.addSubMenu ("Rose Sounds (real instruments)", sounds);
+    addPluginItems (plug, types, true, 1000); m.addSubMenu ("VST3 / AU instruments", plug);
     m.showMenuAsync ({}, [this, types] (int r)
     {
         auto& t = *engine.tracks[(size_t) engine.selected]; juce::String err;
         if (r >= 1000) { const auto d = types[r - 1000]; err = engine.setInstrument (t, {}, &d); }
         else if (r == 1) err = engine.setInstrument (t, "synth", nullptr);
+        else if (r == 2) err = engine.setInstrument (t, "drums", nullptr);
+        else if (r >= 100) { err = engine.setInstrument (t, "sounds", nullptr); if (err.isEmpty()) Engine::setParam (*t.instrument.node->getProcessor(), "patch", juce::var (soundLibrary()[(size_t) r - 100].name)); }
         if (err.isNotEmpty()) juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Couldn't load instrument", err);
         refresh();
     });
@@ -489,7 +505,7 @@ void DevicePanel::instrumentMenu()
 MainComponent::MainComponent()
 {
     setLookAndFeel (&look);
-    for (auto* b : { &bHome, &bPlay, &bStop, &bRec, &bLoop, &bClick, &bAddAudio, &bAddInst, &bMaster, &bPlugins, &bAudio, &bOpen, &bSave, &bBounce, &bAbout }) addAndMakeVisible (b);
+    for (auto* b : { &bHome, &bPlay, &bStop, &bRec, &bLoop, &bClick, &bAddAudio, &bAddInst, &bMaster, &bPlugins, &bAudio, &bOpen, &bSave, &bBounce, &bAbout, &bTemplates }) addAndMakeVisible (b);
     for (auto* b : { &bPointer, &bScissors }) { addAndMakeVisible (b); b->setClickingTogglesState (true); b->setRadioGroupId (77); }
     bPointer.setToggleState (true, juce::dontSendNotification);
     bPointer.setTooltip ("Pointer (1): move, resize, fade and loop clips"); bScissors.setTooltip ("Scissors (3): click a clip to split it - or Alt-click with any tool");
@@ -497,8 +513,11 @@ MainComponent::MainComponent()
     bScissors.onClick = [this] { timeline.tool = Timeline::Tool::scissors; timeline.setMouseCursor (juce::MouseCursor::CrosshairCursor); };
     timeline.notify = [this] (const juce::String& m) { statusText = m; statusUntil = juce::Time::getMillisecondCounter() + 2500; repaint(); };
     bAbout.setTooltip ("About Rose Studio");
-    bAbout.onClick = [] { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Rose Studio " + juce::String (ProjectInfo::versionString),
-        "by Rosenfeld Productions\n\nHosts VST3" + juce::String ((juce::SystemStats::getOperatingSystemType() & juce::SystemStats::MacOSX) != 0 ? " and Audio Unit" : "") + " plugins, 13 built-in effects, Rose Synth, recording, piano roll, sessions and offline bounce.\n\nShortcuts: Space play, R record, Cmd+D duplicate, Cmd+E split, Cmd+S save, Delete remove clip.\nDouble-click a fader or knob to reset it."); };
+    bAbout.onClick = [] { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Rose Studio " + juce::String (ProjectInfo::versionString) + " (build " + juce::String (Updater::currentBuild()) + ")",
+        "by Moshe Rosenfeld\n\nHosts VST3" + juce::String ((juce::SystemStats::getOperatingSystemType() & juce::SystemStats::MacOSX) != 0 ? " and Audio Unit" : "") + " plugins, with 19 built-in effects (Rose Tune pitch correction, de-esser, harmonizer, doubler and more), Rose Synth, Rose Drums, Rose Sounds, templates, recording, piano roll and offline bounce.\n\n"
+        "Rose Sounds uses the FluidR3 GM SoundFont by Frank Wen (MIT licence), rendered by the midi-js-soundfonts project (CC BY 3.0).\n\n"
+        "Free open-source plugins that work in Rose: Surge XT, Vital, Dexed, OB-Xd, Odin 2, Helm. Install one, then press Plugins... to scan.\n\n"
+        "Shortcuts: Space play, R record, Cmd+D duplicate, Cmd+E split, Cmd+S save, Delete remove clip.\nDouble-click a fader or knob to reset it."); };
     bLoop.setClickingTogglesState (true); bClick.setClickingTogglesState (true); bMaster.setClickingTogglesState (true);
     bLoop.setToggleState (true, juce::dontSendNotification); bRec.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffe11d48));
     bHome.onClick = [this] { engine.toStart(); };
@@ -509,7 +528,13 @@ MainComponent::MainComponent()
     bLoop.onClick = [this] { engine.transport.looping = bLoop.getToggleState(); timeline.repaint(); };
     bClick.onClick = [this] { engine.transport.metronome = bClick.getToggleState(); };
     bAddAudio.onClick = [this] { engine.addTrack (true); };
-    bAddInst.onClick = [this] { engine.addTrack (false); engine.selectTrack ((int) engine.tracks.size() - 1); };
+    bAddInst.onClick = [this] { addInstrumentMenu(); };
+    bTemplates.onClick = [this] { templatesMenu(); };
+    addChildComponent (bUpdate); bUpdate.setColour (juce::TextButton::buttonColourId, col::rose);
+    bUpdate.onClick = [this] { offerUpdate (pendingUpdate, true); };
+    // look for a newer release a few seconds after launch (silent when offline or up to date)
+    juce::Timer::callAfterDelay (3000, [w = juce::Component::SafePointer<MainComponent> (this)] { Updater::check ([w] (Updater::Release r) { if (w && r.build > 0) w->offerUpdate (r, true); }); });
+    bTemplates.setTooltip ("Start a new session from a template: EDM, pop, trap, R&B, simcha, orchestral, podcast");
     bMaster.onClick = [this] { devices.showMaster = bMaster.getToggleState(); devices.refresh(); };
     bPlugins.onClick = [this] { showScanner(); }; bAudio.onClick = [this] { showAudioSettings(); };
     bSave.onClick = [this] { save(); }; bOpen.onClick = [this] { open(); }; bBounce.onClick = [this] { bounce(); };
@@ -564,7 +589,8 @@ void MainComponent::resized()
     time.setBounds (top.removeFromLeft (120)); top.removeFromLeft (8);
     bpmLabel.setBounds (top.removeFromLeft (36)); bpm.setBounds (top.removeFromLeft (110)); top.removeFromLeft (10);
     bAbout.setBounds (top.removeFromRight (32)); top.removeFromRight (4);
-    for (auto* b : { &bBounce, &bSave, &bOpen, &bAudio, &bPlugins, &bMaster, &bAddInst, &bAddAudio }) { b->setBounds (top.removeFromRight (b == &bAddInst ? 104 : b == &bAudio ? 100 : 82)); top.removeFromRight (4); }
+    if (bUpdate.isVisible()) { bUpdate.setBounds (top.removeFromRight (150)); top.removeFromRight (4); }
+    for (auto* b : { &bBounce, &bSave, &bOpen, &bTemplates, &bAudio, &bPlugins, &bMaster, &bAddInst, &bAddAudio }) { b->setBounds (top.removeFromRight (b == &bAddInst ? 104 : b == &bAudio ? 100 : 82)); top.removeFromRight (4); }
     keys.setBounds (r.removeFromBottom (64));
     devices.setBounds (r.removeFromBottom (170));
     headerHolder.setBounds (r.removeFromLeft (240));
@@ -687,5 +713,78 @@ void MainComponent::bounce()
         pluginWindows.clear();
         (new Job (engine, f))->launchThread();
     });
+}
+} // namespace rose
+
+namespace rose
+{
+void MainComponent::addInstrumentMenu()
+{
+    juce::PopupMenu m, sounds;
+    for (int k = 0; k < (int) soundLibrary().size(); ++k) sounds.addItem (100 + k, soundLibrary()[(size_t) k].name);
+    m.addItem (1, "Rose Synth"); m.addItem (2, "Rose Drums"); m.addSubMenu ("Rose Sounds (real instruments)", sounds);
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&bAddInst), [this] (int r)
+    {
+        if (r <= 0) return;
+        const juce::String name = r >= 100 ? juce::String (soundLibrary()[(size_t) r - 100].name) : r == 2 ? "Drums" : juce::String();
+        auto& t = engine.addTrack (false, name);
+        if (r == 2) engine.setInstrument (t, "drums", nullptr);
+        if (r >= 100 && engine.setInstrument (t, "sounds", nullptr).isEmpty()) Engine::setParam (*t.instrument.node->getProcessor(), "patch", juce::var (name));
+        engine.selectTrack ((int) engine.tracks.size() - 1);
+    });
+}
+
+void MainComponent::templatesMenu()
+{
+    const auto json = juce::JSON::parse (juce::String::fromUTF8 (BinaryData::templates_json, BinaryData::templates_jsonSize));
+    auto* list = json["templates"].getArray(); if (list == nullptr) return;
+    juce::PopupMenu m; m.addSectionHeader ("New session from a template");
+    for (int i = 0; i < list->size(); ++i) m.addItem (i + 1, (*list)[i]["name"].toString() + "   -   " + (*list)[i]["desc"].toString());
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&bTemplates), [this, json] (int r)
+    {
+        if (r <= 0) return;
+        auto tpl = (*json["templates"].getArray())[r - 1];
+        auto load = [this, tpl]
+        {
+            juce::StringArray problems;
+            if (! engine.applyTemplate (tpl, problems)) return;
+            sessionFile = juce::File(); bpm.setValue (engine.transport.bpm.load(), juce::dontSendNotification);
+            statusText = tpl["name"].toString() + " template ready - press Space"; statusUntil = juce::Time::getMillisecondCounter() + 4000;
+            if (findSoundsDir() == juce::File()) statusText = "Template loaded, but the Rose Sounds sample folder is missing - reinstall Rose Studio";
+            if (! problems.isEmpty()) juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Template", problems.joinIntoString ("\n"));
+            repaint();
+        };
+        if (engine.tracks.empty()) { load(); return; }
+        juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::QuestionIcon, "Start from " + tpl["name"].toString() + "?",
+            "This replaces the current session. Save first if you want to keep it.", "Replace", "Cancel", nullptr,
+            juce::ModalCallbackFunction::create ([load] (int ok) { if (ok) load(); }));
+    });
+}
+} // namespace rose
+
+namespace rose
+{
+void MainComponent::offerUpdate (Updater::Release r, bool askNow)
+{
+    if (r.build <= 0 || updating) return;
+    pendingUpdate = r; bUpdate.setButtonText ("Update to 1.0." + juce::String (r.build)); bUpdate.setVisible (true); resized();
+    if (! askNow) return;
+    juce::AlertWindow::showOkCancelBox (juce::MessageBoxIconType::InfoIcon, "Rose Studio 1.0." + juce::String (r.build) + " is available",
+        "You have build " + juce::String (Updater::currentBuild()) + ". Rose will download the update, close, install it and reopen.\n\nSave your session first if you have unsaved changes.",
+        "Update now", "Later", nullptr, juce::ModalCallbackFunction::create ([w = juce::Component::SafePointer<MainComponent> (this)] (int ok) { if (ok && w) w->installUpdate(); }));
+}
+void MainComponent::installUpdate()
+{
+    updating = true; bUpdate.setEnabled (false); bUpdate.setButtonText ("Downloading...");
+    Updater::downloadAndPrepare (
+        [w = juce::Component::SafePointer<MainComponent> (this)] (float p) { if (w) w->bUpdate.setButtonText ("Downloading " + juce::String (juce::roundToInt (p * 100)) + "%"); },
+        [w = juce::Component::SafePointer<MainComponent> (this)] (juce::String err)
+        {
+            if (w == nullptr) return;
+            if (err.isEmpty() && Updater::launchInstaller()) { w->engine.stop(); juce::JUCEApplication::getInstance()->systemRequestedQuit(); return; }
+            w->updating = false; w->bUpdate.setEnabled (true); w->bUpdate.setButtonText ("Retry update");
+            juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::WarningIcon, "Update", (err.isNotEmpty() ? err : juce::String ("Couldn't start the installer."))
+                + "\n\nYou can always download the latest version from github.com/mosheshlomorosenfeld-alt/Rose/releases/latest");
+        });
 }
 } // namespace rose

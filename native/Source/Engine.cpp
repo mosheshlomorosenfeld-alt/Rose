@@ -551,3 +551,84 @@ bool Engine::bounce (const juce::File& f, std::function<void (double)> progress)
     return ok;
 }
 } // namespace rose
+
+namespace rose
+{
+void Engine::setParam (juce::AudioProcessor& proc, const juce::String& id, const juce::var& v)
+{
+    for (auto* prm : proc.getParameters())
+        if (auto* r = dynamic_cast<juce::RangedAudioParameter*> (prm); r != nullptr && r->getParameterID() == id)
+        {
+            float val = 0;
+            if (v.isString())
+            {
+                if (auto* c = dynamic_cast<juce::AudioParameterChoice*> (r)) val = (float) juce::jmax (0, c->choices.indexOf (v.toString()));
+                else val = v.toString().getFloatValue();
+            }
+            else if (v.isBool()) val = (bool) v ? 1.0f : 0.0f;
+            else val = (float) (double) v;
+            r->setValueNotifyingHost (r->convertTo0to1 (val));
+            return;
+        }
+}
+
+bool Engine::applyTemplate (const juce::var& t, juce::StringArray& problems)
+{
+    if (! t.isObject() || ! t["tracks"].isArray()) return false;
+    stop(); transport.playing = false; transport.pos = 0;
+    while (! tracks.empty()) removeTrack ((int) tracks.size() - 1);
+    while (! masterInserts.empty()) removeInsert (masterInserts, 0);
+    transport.bpm = (double) t.getProperty ("bpm", 120);
+    if (auto* loop = t["loop"].getArray(); loop != nullptr && loop->size() == 2) { transport.loopStart = (double) (*loop)[0]; transport.loopEnd = (double) (*loop)[1]; }
+    transport.looping = true;
+
+    auto applyParams = [] (juce::AudioProcessor* proc, const juce::var& params)
+    {
+        if (proc == nullptr) return;
+        if (auto* o = params.getDynamicObject()) for (auto& kv : o->getProperties()) setParam (*proc, kv.name.toString(), kv.value);
+    };
+    auto addFx = [&] (std::vector<Slot>& chain, const juce::var& list)
+    {
+        if (auto* a = list.getArray())
+            for (auto& fx : *a)
+            {
+                const auto err = addInsert (chain, fx["type"].toString(), nullptr);
+                if (err.isNotEmpty()) { problems.add (err); continue; }
+                applyParams (chain.back().node->getProcessor(), fx["params"]);
+            }
+    };
+    for (auto& x : *t["tracks"].getArray())
+    {
+        const auto type = x["type"].toString(); const bool audio = type == "audio";
+        auto& tr = addTrack (audio, x["name"].toString());
+        tr.volDb = (float) (double) x.getProperty ("vol", -6); tr.pan = (float) (double) x.getProperty ("pan", 0);
+        if (! audio)
+        {
+            const auto err = setInstrument (tr, type, nullptr);
+            if (err.isNotEmpty()) problems.add (err);
+            else
+            {
+                auto* proc = tr.instrument.node->getProcessor();
+                if (type == "sounds") setParam (*proc, "patch", x["patch"]);
+                applyParams (proc, x["nparams"]); applyParams (proc, x["params"]);
+            }
+            if (auto* clips = x["clips"].getArray())
+            {
+                const juce::ScopedLock sl (tr.src()->lock);
+                for (auto& c : *clips)
+                {
+                    MidiClip mc; mc.name = c["name"].toString(); mc.start = c["start"]; mc.length = c["len"];
+                    if (auto* ns = c["notes"].getArray())
+                        for (auto& n : *ns) if (auto* a = n.getArray(); a != nullptr && a->size() == 4)
+                            mc.notes.push_back ({ (int) (*a)[0], (double) (*a)[1], (double) (*a)[2], (float) (double) (*a)[3] });
+                    tr.src()->midiClips.push_back (std::move (mc));
+                }
+            }
+        }
+        addFx (tr.inserts, x["nfx"]);
+    }
+    addFx (masterInserts, t["master"]["nfx"]);
+    selected = 0; updateMix(); rewire(); sendChangeMessage();
+    return true;
+}
+} // namespace rose
