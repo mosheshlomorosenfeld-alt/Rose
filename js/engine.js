@@ -85,7 +85,7 @@ export class Engine {
   get spb() { return 60 / this.p.bpm; }
   env(ctx) { return { bpm: this.p.bpm, buffer: id => this.buffers.get(id), midiOut: name => ctx === this.ctx ? (this.midiOutputs?.get(name) || [...(this.midiOutputs?.values() || [])][0]) : null, perfTime: t => performance.now() + Math.max(0, t - ctx.currentTime + (ctx.outputLatency || 0)) * 1000 }; }
   notesOf(c, p = this.p) { return c.pattern ? (p.patterns?.[c.pattern]?.notes || []) : (c.notes || []); }
-  loopLen(c, p = this.p) { return c.pattern ? (p.patterns?.[c.pattern]?.len || c.len) : c.len; }
+  loopLen(c, p = this.p) { return c.pattern ? (p.patterns?.[c.pattern]?.len || c.len) : (c.loopLen || c.len); }
 
   // ---------- graph ----------
   async strip(ctx, inserts, dest, live) {
@@ -263,7 +263,7 @@ export class Engine {
         }
       } else {
         const buf = this.buffers.get(c.sample); if (!buf) return;
-        const L = c.len, loops = cEnd - cStart > L + 1e-6;   // session audio clips loop
+        const L = Math.max(0.0625, c.loopLen || c.len), loops = cEnd - cStart > L + 1e-6;   // looped clips and session clips repeat
         const k0 = loops ? Math.max(0, Math.floor((b0 - cStart) / L)) : 0, k1 = loops ? Math.floor((b1 - cStart) / L) : 0;
         for (let k = k0; k <= k1; k++) {
           const os = cStart + k * L, oe = Math.min(os + L, cEnd), rate = c.rate || 1; let startB = null, off = c.offset || 0;

@@ -1,7 +1,7 @@
 // Rose Studio offline support: the app shell is cached so the installed app opens without internet.
-const VERSION = 'rose-1.0.0';
+const VERSION = 'rose-1.1.0';
 const SHELL = ['./', './index.html', './css/rose.css', './js/app.js', './js/engine.js', './js/effects.js', './js/instruments.js',
-  './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png', './icons/favicon-64.png'];
+  './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png', './icons/favicon-64.png', './icons/logo.svg'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSION).map(k => caches.delete(k)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', e => {

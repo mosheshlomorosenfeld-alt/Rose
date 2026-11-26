@@ -8,10 +8,10 @@ namespace rose
 struct Note { int pitch; double start, length; float vel; };
 struct AudioClip
 {
-    juce::File file; double start = 0, length = 4, offsetSec = 0; float gainDb = 0;
+    juce::File file; double start = 0, length = 4, offsetSec = 0, fadeIn = 0, fadeOut = 0, loopLen = 0; float gainDb = 0;   // fades and loop in beats (loopLen 0 = no loop)
     std::shared_ptr<juce::AudioBuffer<float>> data; double fileRate = 44100;
 };
-struct MidiClip { juce::String name { "MIDI" }; double start = 0, length = 4; std::vector<Note> notes; };
+struct MidiClip { juce::String name { "MIDI" }; double start = 0, length = 4, loopLen = 0; std::vector<Note> notes; };
 
 class Engine;
 

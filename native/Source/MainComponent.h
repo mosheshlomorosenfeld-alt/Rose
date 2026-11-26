@@ -7,7 +7,8 @@ namespace rose
 {
 namespace col
 {
-    const juce::Colour bg (0xff121014), panel (0xff1b181e), panel2 (0xff232026), line (0xff332f37), ink (0xfff3eee7), mute (0xffa39ca6), rose (0xffff4f8b), lane (0xff17151a), lane2 (0xff1c1a1f);
+    // Graphite console: mid-grey chassis, darker deck, colour only where it means something
+    const juce::Colour bg (0xff1d1e21), panel (0xff2b2c30), panel2 (0xff323338), line (0xff3b3c42), ink (0xffe6e4df), mute (0xff9a978f), rose (0xffe0708a), lane (0xff212226), lane2 (0xff24252a);
 }
 
 //==============================================================================
@@ -34,6 +35,7 @@ public:
         auto* ed = p.hasEditor() ? p.createEditorIfNeeded() : nullptr;
         if (ed == nullptr) ed = new juce::GenericAudioProcessorEditor (p);
         setContentOwned (ed, true); setUsingNativeTitleBar (true); setResizable (ed->isResizable(), false);
+        setAlwaysOnTop (true);   // plugin windows float above the studio (released while Rose is in the background)
         centreWithSize (juce::jmax (300, getWidth()), juce::jmax (200, getHeight())); setVisible (true);
     }
     void closeButtonPressed() override { closed (this); }
@@ -83,10 +85,16 @@ public:
     std::function<void (int track, int clip)> openPianoRoll;
     std::function<void()> changed;
     void deleteSelected(); void duplicateSelected(); void splitSelected();
+    void splitAt (double beat); void copySelected (bool cut); void paste(); void toggleClipLoop(); void loopToSelection();
+    void setFade (bool in, double beats);
+    enum class Tool { pointer, scissors } tool = Tool::pointer;
+    std::function<void (const juce::String&)> notify;
 private:
     double snap (double b, bool fine) const { return fine ? b : std::round (b * 4) / 4; }
     Engine& engine;
-    enum class Drag { none, move, resize, loop, seek } drag = Drag::none;
+    enum class Drag { none, move, resize, loop, seek, fadeIn, fadeOut, clipLoop } drag = Drag::none;
+    double fade0 = 0;
+    struct Clipboard { bool has = false, audio = false; AudioClip a; MidiClip m; } clipboard;
     double dragStartBeat = 0, clipStart0 = 0, clipLen0 = 0;
     std::map<const void*, std::vector<float>> peaks;
     const std::vector<float>& peaksFor (const AudioClip&);
@@ -153,7 +161,7 @@ private:
     Engine engine;
     juce::TextButton bHome { "|<" }, bPlay { "Play" }, bStop { "Stop" }, bRec { "Rec" }, bLoop { "Loop" }, bClick { "Click" },
                      bAddAudio { "+ Audio" }, bAddInst { "+ Instrument" }, bMaster { "Master FX" }, bPlugins { "Plugins..." }, bAudio { "Audio/MIDI..." },
-                     bOpen { "Open" }, bSave { "Save" }, bBounce { "Bounce WAV" }, bAbout { "?" };
+                     bOpen { "Open" }, bSave { "Save" }, bBounce { "Bounce WAV" }, bAbout { "?" }, bPointer { "Pointer" }, bScissors { "Scissors" };
     juce::Slider bpm; juce::Label time, bpmLabel { {}, "BPM" };
     juce::Component headerHolder; juce::OwnedArray<TrackHeader> headers;
     struct SyncViewport : juce::Viewport { std::function<void()> moved; void visibleAreaChanged (const juce::Rectangle<int>&) override { if (moved) moved(); } } viewport;
@@ -164,6 +172,7 @@ private:
     std::unique_ptr<juce::DocumentWindow> pianoRollWindow;
     std::unique_ptr<juce::FileChooser> chooser;
     juce::File sessionFile;
-    int lastTrackCount = -1;
+    int lastTrackCount = -1; int floatCheck = 0;
+    juce::String statusText; juce::uint32 statusUntil = 0;
 };
 } // namespace rose

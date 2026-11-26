@@ -138,7 +138,7 @@ function beatsShown() { return Math.max(E.songEnd() + 16, P().loop.end + 8, 64, 
 function renderHeads() {
   $('#hlist').innerHTML = P().tracks.map(t => {
     const grp = t.kind === 'group', members = grp ? P().tracks.filter(x => x.out === t.id).length : 0;
-    const kind = grp ? `Group bus · ${members} track${members === 1 ? '' : 's'}` : t.kind === 'audio' ? 'Audio' : esc(INSTRUMENTS[t.inst]?.name);
+    const kind = grp ? `Group bus, ${members} track${members === 1 ? '' : 's'}` : t.kind === 'audio' ? 'Audio' : esc(INSTRUMENTS[t.inst]?.name);
     const outTo = !grp && t.out !== 'master' ? ' → ' + esc(trk(t.out)?.name || '') : '';
     const autoSel = t.autoShow ? `<select class="autosel" aria-label="Automation parameter">${autoTargets(t).map(([v, l]) => `<option value="${v}" ${v === t.autoShow ? 'selected' : ''}>${esc(l)}${t.auto.some(a => a.target === v && a.points.length) ? ' •' : ''}</option>`).join('')}</select>` : '';
     return `<div class="th ${t.id === UI.track ? 'sel' : ''}" data-id="${t.id}" style="--c:${t.color}">
@@ -146,7 +146,7 @@ function renderHeads() {
       <div class="row"><input class="name" value="${esc(t.name)}" aria-label="Track name"><button class="sm" data-act="menu" title="Track options" aria-label="Track options">⋯</button></div>
       <div class="row"><button class="sm m ${t.mute ? 'on' : ''}" data-act="mute" title="Mute">M</button><button class="sm s ${t.solo ? 'on' : ''}" data-act="solo" title="Solo">S</button>${grp ? '' : `<button class="sm a ${t.arm ? 'on' : ''}" data-act="arm" title="Arm for recording">●</button>`}<button class="sm au ${t.autoShow ? 'on' : ''} ${t.auto?.some(a => a.points.length) ? 'has' : ''}" data-act="auto" title="Show automation (draw volume, pan and effect changes over time)">A</button>
       <input class="vol" type="range" min="-60" max="6" step="0.5" value="${t.vol}" data-def="0" aria-label="Volume" title="${t.vol} dB"></div>
-      ${autoSel || `<div class="kind">${kind}${t.inserts.length ? ' · ' + t.inserts.length + ' fx' : ''}${outTo}</div>`}</div></div>`;
+      ${autoSel || `<div class="kind">${kind}${t.inserts.length ? `, ${t.inserts.length} effect${t.inserts.length === 1 ? '' : 's'}` : ''}${outTo}</div>`}</div></div>`;
   }).join('');
 }
 function autoTargets(t) {
@@ -173,7 +173,7 @@ $('#lanesWrap').addEventListener('scroll', () => { $('#hlist').scrollTop = $('#l
 // ---------- track menu ----------
 function menuAt(anchor, items) {
   closePops(); $('#ctxPop')?.remove(); const m = document.createElement('div'); m.className = 'pop'; m.id = 'ctxPop';
-  m.innerHTML = items.map((it, i) => `<button data-i="${i}" ${it.disabled ? 'disabled' : ''}><span class="ic">${it.icon || ''}</span><b>${esc(it.label)}</b>${it.sub ? `<small>${esc(it.sub)}</small>` : ''}</button>`).join('');
+  m.innerHTML = items.map((it, i) => `<button data-i="${i}" ${it.disabled ? 'disabled' : ''}><b>${esc(it.label)}</b><small>${esc(it.key || '')}</small></button>`).join('');
   document.body.append(m); const r = anchor.getBoundingClientRect(); m.style.top = Math.min(innerHeight - m.offsetHeight - 8, r.bottom + 4) + 'px'; m.style.left = Math.min(innerWidth - m.offsetWidth - 8, r.left) + 'px';
   m.onclick = e => { const b = e.target.closest('[data-i]'); if (b) { m.remove(); items[+b.dataset.i].run(); } }; m.querySelector('button')?.focus();
   setTimeout(() => addEventListener('click', function off(ev) { if (!m.contains(ev.target)) { m.remove(); removeEventListener('click', off); } }), 0);
@@ -251,7 +251,7 @@ function renderLanes() {
     P().tracks.map(t => {
       const hint = t.kind === 'group' ? 'Group bus — in the Mixer, set other tracks’ Out to this group' : t.clips.length ? '' : t.kind === 'audio' ? 'Drop an audio file here, or arm ● and press Record' : 'Double-click here to draw notes · or arm ● and record from your keyboard';
       return `<div class="lane ${t.autoShow ? 'autoon' : ''}" data-id="${t.id}" style="--c:${t.color};background-image:repeating-linear-gradient(90deg,var(--grid) 0 1px,transparent 1px ${UI.ppb}px),repeating-linear-gradient(90deg,var(--line) 0 1px,transparent 1px ${UI.ppb * P().sig}px)">${hint && !t.autoShow ? `<span class="lanehint" style="left:${sl}px">${hint}</span>` : ''}${t.clips.map(c =>
-      `<div class="clip ${c.id === UI.clip ? 'sel' : ''} ${c.pattern ? 'pat' : ''}" data-clip="${c.id}" style="left:${c.start * UI.ppb}px;width:${Math.max(6, c.len * UI.ppb)}px"><span class="cn">${esc(clipName(c))}</span><canvas></canvas><div class="rs"></div></div>`).join('')}${t.autoShow ? autoSvg(t, w) : ''}</div>`;
+      `<div class="clip ${c.id === UI.clip ? 'sel' : ''} ${c.pattern ? 'pat' : ''}" data-clip="${c.id}" style="left:${c.start * UI.ppb}px;width:${Math.max(6, c.len * UI.ppb)}px"><span class="cn">${c.loopLen && c.loopLen < c.len ? '↻ ' : ''}${esc(clipName(c))}</span><canvas></canvas>${isMidi(c) ? '' : '<div class="fh in" title="Drag: fade in"></div><div class="fh out" title="Drag: fade out"></div>'}<div class="rs" title="Drag: resize"></div><div class="lh" title="Drag: loop the clip (repeat it)"></div></div>`).join('')}${t.autoShow ? autoSvg(t, w) : ''}</div>`;
     }).join('');
   $('#lanes').querySelectorAll('.clip').forEach(el => drawClip(el, findClip(el.dataset.clip)));
   $('#playhead').style.height = Math.max($('#lanesWrap').clientHeight, 56 + P().tracks.length * LANE) + 'px';
@@ -321,7 +321,18 @@ $('#lanes').addEventListener('pointerdown', e => {
   const el = e.target.closest('.clip'), lane = e.target.closest('.lane'); if (!lane) return;
   if (!el) { UI.clip = null; UI.track = lane.dataset.id; UI.dev = { kind: 'track', id: UI.track }; markSel(); renderHeads(); renderDock(); return; }
   const fc = findClip(el.dataset.clip); UI.clip = fc.c.id; UI.track = fc.t.id; UI.dev = { kind: 'track', id: fc.t.id };
-  const resize = e.target.classList.contains('rs'), x0 = e.clientX, y0 = e.clientY, s0 = fc.c.start, l0 = fc.c.len; let moved = false, src = fc.t;
+  if (e.button === 2) return;
+  if (UI.tool === 'split' || e.altKey) { const r = el.getBoundingClientRect(); splitAt(fc, snapB(fc.c.start + (e.clientX - r.left) / UI.ppb)); return; }
+  const fh = e.target.closest('.fh');
+  if (fh) {
+    const c = fc.c, which = fh.classList.contains('in') ? 'fadeIn' : 'fadeOut', x0f = e.clientX, v0 = c[which] || 0; snapshot(); fh.setPointerCapture(e.pointerId);
+    const mv = ev => { const d = (ev.clientX - x0f) / UI.ppb * (which === 'fadeIn' ? 1 : -1); c[which] = Math.max(0, Math.min(c.len / 2, Math.round((v0 + d) * 16) / 16)); renderLanes(); toastQuiet(`${which === 'fadeIn' ? 'Fade in' : 'Fade out'}: ${c[which].toFixed(2)} beats`); };
+    const up2 = () => { fh.removeEventListener('pointermove', mv); fh.removeEventListener('pointerup', up2); persist(); if (UI.tab === 'editor') renderEditor(); };
+    fh.addEventListener('pointermove', mv); fh.addEventListener('pointerup', up2); return;
+  }
+  const loopDrag = e.target.classList.contains('lh');
+  if (loopDrag && !fc.c.pattern && !fc.c.loopLen) fc.c.loopLen = fc.c.len;
+  const resize = e.target.classList.contains('rs') || loopDrag, x0 = e.clientX, y0 = e.clientY, s0 = fc.c.start, l0 = fc.c.len; let moved = false, src = fc.t;
   el.setPointerCapture(e.pointerId);
   const move = ev => {
     const db_ = (ev.clientX - x0) / UI.ppb; if (!moved && Math.abs(ev.clientX - x0) + Math.abs(ev.clientY - y0) < 4) return;
@@ -375,7 +386,8 @@ function drawClip(el, fc) {
     g.globalAlpha = 1;
   } else {
     const pk = peaksFor(c.sample), b = E.buffers.get(c.sample); if (!pk) return; const sr = b.sampleRate / 256, mid = H / 2;
-    for (let x = 0; x < W; x++) { const sec = (c.offset || 0) + x / W * c.len * E.spb * (c.rate || 1), i = Math.floor(sec * sr); if (i >= pk.length) break; const a = pk[i] * mid * db(c.gain || 0); g.fillRect(x, mid - a, 1, Math.max(1, a * 2)); }
+    const LL = c.loopLen && c.loopLen < c.len ? c.loopLen : c.len;
+    for (let x = 0; x < W; x++) { const bb = x / W * c.len, within = bb % LL; if (LL < c.len && within < c.len / W) { g.globalAlpha = .5; g.fillRect(x, 0, 1, H); g.globalAlpha = 1; } const sec = (c.offset || 0) + within * E.spb * (c.rate || 1), i = Math.floor(sec * sr); if (i >= pk.length) continue; const a = pk[i] * mid * db(c.gain || 0); g.fillRect(x, mid - a, 1, Math.max(1, a * 2)); }
     g.strokeStyle = cssColor('--ink'); g.lineWidth = 1.2; g.beginPath();
     if (c.fadeIn) { const fx = c.fadeIn / c.len * W; g.moveTo(0, H); g.lineTo(fx, 0); }
     if (c.fadeOut) { const fx = W - c.fadeOut / c.len * W; g.moveTo(fx, 0); g.lineTo(W, H); } g.stroke();
@@ -386,7 +398,7 @@ document.querySelector('.tabs').addEventListener('click', e => { const b = e.tar
 function setTab(t) { UI.tab = t; document.querySelectorAll('.tabs [data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === t)); ['editor', 'devices', 'mixer', 'plugins'].forEach(p => $('#' + p).hidden = p !== t); renderDock(); }
 function renderDock() {
   if (UI.lib && $('#lib').innerHTML) renderLib();
-  const t = trk(UI.track); $('#dockinfo').textContent = t ? `${t.name}${UI.clip ? ' · ' + (findClip(UI.clip)?.c.name || '') : ''}` : '';
+  const t = trk(UI.track); $('#dockinfo').textContent = t ? `${t.name}${UI.clip ? ' / ' + (findClip(UI.clip)?.c.name || '') : ''}` : '';
   if (UI.tab === 'editor') renderEditor(); else if (UI.tab === 'devices') renderDevices(); else if (UI.tab === 'mixer') renderMixer(); else renderPlugins();
 }
 
@@ -404,13 +416,14 @@ function clipBar(fc, extra = '') {
   const ref = fc.ref || fc.c, midi = isMidi(ref), pat = !!ref.pattern;
   const patBits = midi ? (pat ? `<span class="pattag" title="This clip is a pattern: every copy plays the same notes, so editing one edits all">⧉ Pattern · edits change every copy</span><button id="cUnique">Make unique</button>` : `<button id="cPattern" title="Turn this clip into a pattern so its copies stay linked (FL Studio style)">Make pattern</button>`) : '';
   const where = fc.slot != null ? `<button id="cToArr" title="Copy this clip into the arrangement at the playhead">→ Arrangement</button>` : `<button id="cToSes" title="Copy this clip into the clip launcher">→ Session</button>`;
-  return `<div class="prbar"><input id="cName" value="${esc(fc.c.name)}" aria-label="${pat ? 'Pattern' : 'Clip'} name" style="width:140px;cursor:text"><label>${pat ? 'Pattern length' : 'Length'} <input id="cLen" type="number" min="0.25" step="0.25" value="${+fc.c.len.toFixed(3)}" style="width:72px;cursor:text"> beats</label>${extra}${patBits}${midi ? '<button id="cMid">Export .mid</button>' : ''}${where}<button id="cDup">Duplicate →</button><button id="cDel">Delete clip</button></div>`;
+  return `<div class="prbar"><input id="cName" value="${esc(fc.c.name)}" aria-label="${pat ? 'Pattern' : 'Clip'} name" style="width:140px;cursor:text"><label>${pat ? 'Pattern length' : 'Length'} <input id="cLen" type="number" min="0.25" step="0.25" value="${+fc.c.len.toFixed(3)}" style="width:72px;cursor:text"> beats</label>${extra}${patBits}${midi ? '<button id="cMid">Export .mid</button>' : ''}${where}${!pat ? `<button id="cLoop" class="${ref.loopLen ? 'on' : ''}" title="Loop: repeat this clip's content when you stretch it (Logic: L)">${ref.loopLen ? '↻ Loop on' : '↻ Loop'}</button>` : ''}<button id="cDup">Duplicate →</button><button id="cDel">Delete clip</button></div>`;
 }
 function bindClipBar(fc, rerender) {
   $('#cName').onchange = e => { snapshot(); fc.c.name = e.target.value; commit(false); };
   $('#cLen').onchange = e => { snapshot(); fc.c.len = Math.max(0.25, +e.target.value || 4); commit(false); };
   if ($('#cMid')) $('#cMid').onclick = () => download(midiFile(fc.c, P().bpm), (fc.c.name || 'clip') + '.mid');
   $('#cDup').onclick = () => duplicateClip(); $('#cDel').onclick = () => deleteClip();
+  if ($('#cLoop')) $('#cLoop').onclick = () => toggleClipLoop();
   const ref = fc.ref || fc.c;
   if ($('#cPattern')) $('#cPattern').onclick = async () => { snapshot(); const id = uid(); P().patterns[id] = { name: ref.name || 'Pattern', len: ref.len, notes: ref.notes }; delete ref.notes; ref.pattern = id; await commit(false); toast('Now a pattern — duplicate it and every copy stays linked'); };
   if ($('#cUnique')) $('#cUnique').onclick = async () => { snapshot(); const pt = P().patterns[ref.pattern], notes = []; for (let b = 0; b < ref.len; b += pt.len) for (const n of pt.notes) if (b + n.s < ref.len) notes.push({ ...n, s: b + n.s }); ref.notes = notes; ref.name = pt.name; delete ref.pattern; await commit(false); toast('This copy is now independent'); };
@@ -441,7 +454,7 @@ function renderPianoRoll(fc, box) {
     for (let p = LO; p <= HI; p++) { const black = [1, 3, 6, 8, 10].includes(p % 12); g.fillStyle = black ? cssColor('--lane2') : cssColor('--lane'); g.fillRect(KW, yOf(p), W, RH); if (p % 12 === 0) { g.fillStyle = cssColor('--line'); g.fillRect(KW, yOf(p) + RH - 1, W, 1); } }
     for (let b = 0; b <= fc.c.len + 1e-9; b += UI.prGrid) { g.fillStyle = cssColor(Math.abs(b % P().sig) < 1e-9 ? '--mute' : Math.abs(b % 1) < 1e-9 ? '--line' : '--grid'); g.fillRect(KW + b * ppb, 0, 1, H); }
     for (const n of fc.c.notes) { g.fillStyle = fc.t.color; g.globalAlpha = 0.45 + n.v * 0.55; g.fillRect(KW + n.s * ppb + 1, yOf(n.p) + 1, Math.max(3, n.l * ppb - 2), RH - 2); g.globalAlpha = 1; g.strokeStyle = cssColor('--ink'); g.strokeRect(KW + n.s * ppb + 1.5, yOf(n.p) + 1.5, Math.max(3, n.l * ppb - 3), RH - 3); }
-    for (let p = LO; p <= HI; p++) { const black = [1, 3, 6, 8, 10].includes(p % 12); g.fillStyle = black ? '#222' : '#f4f1ec'; g.fillRect(0, yOf(p), KW, RH); g.fillStyle = '#999'; g.fillRect(0, yOf(p) + RH - 1, KW, 1); if (p % 12 === 0) { g.fillStyle = '#333'; g.font = '9px Inter'; g.fillText(nname(p), 4, yOf(p) + 10); } }
+    for (let p = LO; p <= HI; p++) { const black = [1, 3, 6, 8, 10].includes(p % 12); g.fillStyle = black ? '#222' : '#f4f1ec'; g.fillRect(0, yOf(p), KW, RH); g.fillStyle = '#999'; g.fillRect(0, yOf(p) + RH - 1, KW, 1); if (p % 12 === 0) { g.fillStyle = '#333'; g.font = '9px "IBM Plex Sans", sans-serif'; g.fillText(nname(p), 4, yOf(p) + 10); } }
   };
   size(); draw(); wrap.scrollTop = yOf(Math.max(...fc.c.notes.map(n => n.p), 72)) - 40;
   let last = UI.prGrid;
@@ -559,7 +572,7 @@ function renderDevices() {
   }
   o.inserts.forEach((s, i) => {
     const def = s.type === 'wam' ? { name: 'Web plugin', params: [] } : EFFECTS[s.type];
-    h += `<div class="dev ${s.bypass ? 'off' : ''}" data-slot="${s.id}"><h4><span class="t" title="${esc(s.url || '')}">${esc(def?.name || s.type)}</span><button data-a="byp" title="Bypass">${s.bypass ? 'Off' : 'On'}</button><button data-a="l" title="Move left" ${i ? '' : 'disabled'}>‹</button><button data-a="r" title="Move right" ${i < o.inserts.length - 1 ? '' : 'disabled'}>›</button><button data-a="x" title="Remove">×</button></h4>`;
+    h += `<div class="dev ${s.bypass ? 'off' : ''}" data-slot="${s.id}"><h4><span class="t" title="${esc(s.url || '')}">${esc(def?.name || s.type)}</span><button data-a="float" title="Open in a floating window that stays on top">Float</button><button data-a="byp" title="Bypass">${s.bypass ? 'Off' : 'On'}</button><button data-a="l" title="Move left" ${i ? '' : 'disabled'}>‹</button><button data-a="r" title="Move right" ${i < o.inserts.length - 1 ? '' : 'disabled'}>›</button><button data-a="x" title="Remove">×</button></h4>`;
     if (s.type === 'eq') h += `<canvas class="eqc" data-eq="${s.id}"></canvas>`;
     if (s.type === 'analyzer') h += `<canvas class="eqc" data-an="${s.id}" style="height:140px"></canvas>`;
     if (s.type === 'comp' || s.type === 'limiter' || s.type === 'sccomp') h += `<div style="font-size:11px;color:var(--mute);padding:6px 10px 2px">Gain reduction</div><div class="gr"><i data-gr="${s.id}"></i></div>`;
@@ -584,25 +597,61 @@ function renderDevices() {
   box.querySelectorAll('[data-a]').forEach(b => b.onclick = async () => {
     const id = b.closest('[data-slot]').dataset.slot, i = o.inserts.findIndex(s => s.id === id), a = b.dataset.a;
     if (a === 'gui') { const f = E.stripFor(UI.dev.kind, UI.dev.id)?.fx.find(f => f.slot.id === id); return openWamGui(f?.node?.wam); }
+    if (a === 'float') { const sl = o.inserts.find(x => x.id === id); return sl?.type === 'wam' ? openWamGui(E.stripFor(UI.dev.kind, UI.dev.id)?.fx.find(f => f.slot.id === id)?.node?.wam) : floatDevice(UI.dev.kind, UI.dev.id, id); }
     snapshot();
     if (a === 'x') o.inserts.splice(i, 1); else if (a === 'byp') o.inserts[i].bypass = !o.inserts[i].bypass;
     else { const j = a === 'l' ? i - 1 : i + 1; [o.inserts[i], o.inserts[j]] = [o.inserts[j], o.inserts[i]]; }
     await commit(true);
   });
-  box.querySelectorAll('[data-k]').forEach(inp => {
+  bindParams(box, o, UI.dev.kind, UI.dev.id);
+  fitRack(); drawEq();
+}
+// wires every parameter control inside root to its owner (track, return or master); shared by the rack and floating windows
+function bindParams(root, o, devKind, devId) {
+  root.querySelectorAll('[data-k]').forEach(inp => {
     const k = inp.dataset.k, pid = inp.dataset.p;
     const pdef = k === 'inst' ? INSTRUMENTS[o.inst].params.find(p => p.id === pid) : k === 'arp' ? ARP_PARAMS.find(p => p.id === pid) : k === 'chord' ? CHORD_PARAMS.find(p => p.id === pid) : EFFECTS[o.inserts.find(s => s.id === k)?.type]?.params.find(p => p.id === pid);
     const val = () => inp.type === 'checkbox' ? inp.checked : inp.tagName === 'SELECT' ? inp.value : fromPos(pdef, inp.value);
     const apply = () => { const v = val();
       if (k === 'arp' || k === 'chord') { o.midifx[k][pid] = v; if (pid === 'on') $('#midiCard').classList.toggle('dim', !(o.midifx.arp.on || o.midifx.chord.on)); }
       else if (k === 'inst') { if (pid === 'preset') { Object.assign(o.instParams, SYNTH_PRESETS[v], { preset: v }); Object.entries(o.instParams).forEach(([a, b]) => E.setInstParam(o.id, a, b)); renderDevices(); } else E.setInstParam(o.id, pid, v); }
-      else E.setFxParam(UI.dev.kind, UI.dev.id, k, pid, v);
+      else E.setFxParam(devKind, devId, k, pid, v);
       if (inp.nextElementSibling?.tagName === 'OUTPUT') inp.nextElementSibling.textContent = fmt(pdef, v);
-      drawEq(); };
+      syncTwins(inp, root); drawEq(); };
     inp.addEventListener('pointerdown', () => snapshot(), { once: false });
     inp.addEventListener('input', apply); inp.addEventListener('change', () => { if (inp.tagName === 'SELECT' || inp.type === 'checkbox') snapshot(); apply(); persist(); if ((k === 'inst' && pid === 'sample') || pdef?.type === 'track') commit(true); });
   });
-  drawEq(); fitRack();
+}
+// keep the rack and any floating copy of the same device showing the same values
+function syncTwins(inp, root) {
+  document.querySelectorAll(`[data-k="${inp.dataset.k}"][data-p="${inp.dataset.p}"]`).forEach(o2 => {
+    if (o2 === inp || root.contains(o2)) return;
+    if (o2.type === 'checkbox') o2.checked = inp.checked; else o2.value = inp.value;
+    const out = inp.nextElementSibling, out2 = o2.nextElementSibling; if (out?.tagName === 'OUTPUT' && out2?.tagName === 'OUTPUT') out2.textContent = out.textContent;
+  });
+}
+
+// ---------- floating device windows: stay on top of the whole studio, drag anywhere ----------
+const floats = new Map();
+function floatWin(key, title, bodyEl, onClose) {
+  floats.get(key)?.remove();
+  const w = document.createElement('div'); w.className = 'fwin'; w.setAttribute('role', 'dialog'); w.setAttribute('aria-label', title);
+  w.innerHTML = `<div class="fbar"><span>${esc(title)}</span><button data-fclose title="Close (the device keeps running)" aria-label="Close">×</button></div>`;
+  const body = document.createElement('div'); body.className = 'fbody'; body.append(bodyEl); w.append(body); document.body.append(w);
+  const n = floats.size; w.style.left = Math.min(innerWidth - 300, 260 + n * 28) + 'px'; w.style.top = Math.min(innerHeight - 200, 90 + n * 28) + 'px';
+  const bar = w.querySelector('.fbar');
+  bar.addEventListener('pointerdown', e => { if (e.target.closest('button')) return; const r = w.getBoundingClientRect(), dx = e.clientX - r.left, dy = e.clientY - r.top; bar.setPointerCapture(e.pointerId);
+    const mv = ev => { w.style.left = Math.max(0, Math.min(innerWidth - 80, ev.clientX - dx)) + 'px'; w.style.top = Math.max(0, Math.min(innerHeight - 30, ev.clientY - dy)) + 'px'; };
+    const up = () => { bar.removeEventListener('pointermove', mv); bar.removeEventListener('pointerup', up); }; bar.addEventListener('pointermove', mv); bar.addEventListener('pointerup', up); });
+  w.addEventListener('pointerdown', () => { document.querySelectorAll('.fwin').forEach(x => x.style.zIndex = 35); w.style.zIndex = 36; });
+  w.querySelector('[data-fclose]').onclick = () => { w.remove(); floats.delete(key); onClose?.(); };
+  floats.set(key, w); return w;
+}
+function floatDevice(kind, id, slotId) {
+  const o = kind === 'master' ? P().master : kind === 'return' ? P().returns.find(r => r.id === id) : trk(id), slot = o?.inserts.find(s => s.id === slotId); if (!slot) return;
+  const def = EFFECTS[slot.type]; if (!def) return;
+  const body = document.createElement('div'); body.innerHTML = paramsHtml(def.params, slot.params, slot.id);
+  floatWin('fx:' + slotId, `${def.name}  /  ${o.name || 'Master'}`, body); bindParams(body, o, kind, id);
 }
 const KEYS = ['C', 'C#', 'D', 'Eb', 'E', 'F', 'F#', 'G', 'Ab', 'A', 'Bb', 'B'];
 const SCALE = { Major: [0, 2, 4, 5, 7, 9, 11], Minor: [0, 2, 3, 5, 7, 8, 10] };
@@ -635,7 +684,7 @@ function bindChordPads(o) {
   });
 }
 function fitRack() {
-  document.querySelectorAll('#devices .dev .ps').forEach(ps => { const dev = ps.closest('.dev'), avail = dev.clientHeight - ps.offsetTop - 12; ps.style.gridTemplateRows = `repeat(${Math.max(1, Math.floor((avail + 5) / 29))}, 24px)`; });
+  document.querySelectorAll('#devices .dev .ps').forEach(ps => { const dev = ps.closest('.dev'), avail = dev.getBoundingClientRect().bottom - ps.getBoundingClientRect().top - 14; ps.style.gridTemplateRows = `repeat(${Math.max(1, Math.floor((avail + 5) / 29))}, 24px)`; });
 }
 function drawEq() {
   document.querySelectorAll('canvas[data-eq]').forEach(cv => {
@@ -650,8 +699,7 @@ function drawEq() {
 }
 async function openWamGui(wam) {
   if (!wam) return toast('That plugin did not load');
-  try { const gui = await wam.createGui(); const d = document.createElement('div'); d.style.cssText = 'position:fixed;inset:10% 10%;z-index:25;background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:auto;padding:10px';
-    const x = document.createElement('button'); x.textContent = 'Close'; x.className = 'tb'; x.onclick = () => { wam.destroyGui?.(gui); d.remove(); }; d.append(x, gui); document.body.append(d); }
+  try { const gui = await wam.createGui(); floatWin('wam:' + (wam.instanceId || Math.random()), wam.name || 'Web plugin', gui, () => wam.destroyGui?.(gui)); }
   catch (e) { toast('This plugin has no window: ' + e.message); }
 }
 
@@ -718,16 +766,75 @@ async function duplicateClip() {
   UI.clip = c.id; await commit(false); if (fc.c.pattern) toast('Linked copy — edit either one and both change');
 }
 async function splitClip() {
-  const fc = UI.clip && findClip(UI.clip), b = snapB(E.position());
-  if (fc?.slot != null) return toast('Split works on arrangement clips');
-  if (fc?.c.pattern) return toast('Click “Make unique” first, then split'); if (!fc || b <= fc.c.start || b >= fc.c.start + fc.c.len) return toast('Put the playhead inside the selected clip to split it');
-  snapshot(); const c = fc.c, cut = b - c.start, d = JSON.parse(JSON.stringify(c)); d.id = uid(); d.start = b; d.len = c.len - cut; c.len = cut;
-  if (c.notes) { d.notes = c.notes.filter(n => n.s >= cut).map(n => ({ ...n, s: n.s - cut })); c.notes = c.notes.filter(n => n.s < cut); } else d.offset = (c.offset || 0) + cut * E.spb;
-  fc.t.clips.push(d); await commit(false);
+  const fc = UI.clip && findClip(UI.clip); if (!fc) return toast('Select a clip, then split at the playhead (or use the scissors tool)');
+  return splitAt(fc, snapB(E.position()));
+}
+// split one clip at a beat; looped and pattern clips are expanded first so both halves keep exactly what you hear
+async function splitAt(fc, b) {
+  if (fc.slot != null) return toast('Split works on arrangement clips');
+  const c = fc.c; if (b <= c.start + 1e-6 || b >= c.start + c.len - 1e-6) return toast('Click inside the clip to split it');
+  snapshot();
+  if (isMidi(c) && (c.pattern || (c.loopLen && c.loopLen < c.len))) { const src = E.notesOf(c), L = E.loopLen(c), ns = []; for (let o = 0; o < c.len; o += L) for (const n of src) if (n.s < L && o + n.s < c.len) ns.push({ ...n, s: o + n.s }); c.notes = ns; delete c.pattern; delete c.loopLen; }
+  const cut = b - c.start, d = JSON.parse(JSON.stringify(c)); d.id = uid(); d.start = b; d.len = c.len - cut; c.len = cut;
+  if (isMidi(c)) { d.notes = c.notes.filter(n => n.s >= cut).map(n => ({ ...n, s: n.s - cut })); c.notes = c.notes.filter(n => n.s < cut).map(n => ({ ...n, l: Math.min(n.l, cut - n.s) })); }
+  else {
+    const L = c.loopLen && c.loopLen < c.len + cut ? c.loopLen : null, rate = c.rate || 1;
+    d.offset = (c.offset || 0) + (L ? cut % L : cut) * E.spb * rate;
+    if (L) { delete d.loopLen; delete c.loopLen; if (c.len > L) { c.loopLen = L; } d.len = Math.min(d.len, L - (cut % L)); }
+    c.fadeOut = 0; d.fadeIn = 0;
+  }
+  fc.t.clips.push(d); UI.clip = d.id; await commit(false);
 }
 
+// ---------- clipboard: cut / copy / paste ----------
+UI.clipboard = null;
+function copyClip(cut = false) {
+  const fc = UI.clip && findClip(UI.clip); if (!fc) return toast('Select a clip first');
+  UI.clipboard = { clip: JSON.parse(JSON.stringify(fc.c)), kind: isMidi(fc.c) ? 'midi' : 'audio', from: fc.t.id };
+  if (cut) { deleteClip(); toast('Cut — select a track and press Ctrl+V to paste at the playhead'); } else toast('Copied — press Ctrl+V to paste at the playhead');
+}
+async function pasteClip() {
+  const cb = UI.clipboard; if (!cb) return toast('Nothing copied yet');
+  let t = trk(UI.track); const fits = x => x && x.kind !== 'group' && (x.kind === 'audio') === (cb.kind === 'audio');
+  if (!fits(t)) t = trk(cb.from); if (!fits(t)) t = P().tracks.find(fits); if (!t) return toast('No track that can hold this clip');
+  snapshot(); const c = JSON.parse(JSON.stringify(cb.clip)); c.id = uid(); c.start = snapB(E.position());
+  if (UI.view === 'session') { const sl = E.slots(t.id), i = sl.findIndex(x => !x); if (i < 0) return toast('No empty slot'); c.start = 0; sl[i] = c; } else t.clips.push(c);
+  UI.clip = c.id; UI.track = t.id; await commit(false); toast(`Pasted on ${t.name}`);
+}
+async function toggleClipLoop() {
+  const fc = UI.clip && findClip(UI.clip); if (!fc || fc.c.pattern) return toast('Select a clip to loop');
+  snapshot(); const c = fc.c;
+  if (c.loopLen) { delete c.loopLen; toast('Clip loop off'); } else { c.loopLen = c.len; c.len = c.len * 2; toast('Clip loop on — drag the clip’s right edge to repeat it more'); }
+  await commit(false);
+}
+function loopToSelection() {
+  const fc = UI.clip && findClip(UI.clip);
+  if (!fc || fc.slot != null) { $('#bLoop').click(); return; }
+  P().loop = { on: true, start: fc.c.start, end: fc.c.start + fc.c.len }; paintTransport(); renderRuler(); renderLanes(); persist(); toast('Loop set to the selected clip');
+}
+function clipMenu(fc, anchorEvent) {
+  const audio = !isMidi(fc.c), dummy = { getBoundingClientRect: () => ({ left: anchorEvent.clientX, bottom: anchorEvent.clientY, top: anchorEvent.clientY }) };
+  const fade = (k, v) => async () => { snapshot(); fc.c[k] = v; await commit(false); };
+  menuAt(dummy, [
+    { icon: '✂', label: 'Cut', key: 'Ctrl+X', run: () => copyClip(true) },
+    { icon: '⧉', label: 'Copy', key: 'Ctrl+C', run: () => copyClip(false) },
+    { icon: '▤', label: 'Paste at playhead', key: 'Ctrl+V', disabled: !UI.clipboard, run: pasteClip },
+    { icon: '⇥', label: 'Duplicate', key: 'Ctrl+D', run: duplicateClip },
+    { icon: '⫶', label: 'Split at playhead', key: 'B', run: splitClip },
+    { icon: '↻', label: fc.c.loopLen ? 'Loop clip: on → off' : 'Loop clip', sub: 'Repeat its content as you stretch it', disabled: !!fc.c.pattern, run: toggleClipLoop },
+    { icon: '⟲', label: 'Set loop region to clip', key: 'Ctrl+L', run: loopToSelection },
+    ...(audio ? [{ icon: '◺', label: 'Fade in (short)', sub: 'or drag the clip’s top-left corner', run: fade('fadeIn', 0.25) }, { icon: '◿', label: 'Fade out (1 beat)', sub: 'or drag the top-right corner', run: fade('fadeOut', 1) }, { icon: '▭', label: 'Remove fades', run: async () => { snapshot(); fc.c.fadeIn = 0; fc.c.fadeOut = 0; await commit(false); } }] : []),
+    { icon: '×', label: 'Delete', key: 'Del', run: deleteClip }
+  ]);
+}
+$('#lanes').addEventListener('contextmenu', e => { const el = e.target.closest('.clip'); if (!el) return; e.preventDefault(); const fc = findClip(el.dataset.clip); UI.clip = fc.c.id; UI.track = fc.t.id; markSel(); clipMenu(fc, e); });
+// tools: pointer (1) and scissors (3), Cubase-style
+UI.tool = 'select';
+function setTool(t) { UI.tool = t; $('#tSel').classList.toggle('on', t === 'select'); $('#tSplit').classList.toggle('on', t === 'split'); document.body.classList.toggle('scissors', t === 'split'); }
+$('#tSel').onclick = () => setTool('select'); $('#tSplit').onclick = () => setTool('split');
+
 // ---------- install, download, about ----------
-export const VERSION = '1.0.0';
+export const VERSION = '1.1.0';
 let installEvt = null;
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; });
 addEventListener('appinstalled', () => toast('Rose is installed — open it from your Dock, Launchpad or Start menu'));
@@ -743,8 +850,8 @@ $('#bInstall').onclick = async () => {
 $('#bDownload').onclick = () => dialog('Rose desktop app', `<p>The desktop version runs your real <b>VST3 and Audio Unit plugins</b> (Serum, SHRUB, FabFilter, Softube Flow, Google Flow Music…).</p>
   <p><a class="tb accent" href="${DL}/download/Rose-mac.zip" target="_blank" rel="noopener">Download for Mac</a> <a class="tb" href="${DL}/download/Rose-windows.zip" target="_blank" rel="noopener">Download for Windows</a></p>
   <p style="font-size:13px"><a href="download.html" target="_blank" rel="noopener">Full download page</a> · <code>${DL}</code><br>Mac first launch: unzip, drag Rose to Applications, then right-click Rose → <i>Open</i> → <i>Open</i> (it isn't signed with an Apple developer certificate yet).</p>`);
-$('#bAbout').onclick = () => dialog('Rose Studio', `<div style="display:flex;gap:16px;align-items:center"><img src="icons/icon-192.png" width="72" height="72" alt="" style="border-radius:16px"><div><b style="font:700 20px 'Space Grotesk'">Rose Studio ${VERSION}</b><br><span style="color:var(--mute)">by Rosenfeld Productions · TABC Studio 1600</span></div></div>
-  <p>${Object.keys(EFFECTS).length} effects · ${Object.keys(INSTRUMENTS).length} instruments · automation · clip launcher · patterns · arpeggiator · chord pads · sidechain · group buses · Strip Silence · WAV &amp; MIDI export.</p>
+$('#bAbout').onclick = () => dialog('Rose Studio', `<div style="display:flex;gap:16px;align-items:center"><img src="icons/icon-192.png" width="72" height="72" alt="" style="border-radius:16px"><div><b style="font-size:17px">Rose Studio ${VERSION}</b><br><span style="color:var(--mute)">Rosenfeld Productions, TABC Studio 1600</span></div></div>
+  <p>${Object.keys(EFFECTS).length} effects and ${Object.keys(INSTRUMENTS).length} instruments, automation, a clip launcher, linked patterns, an arpeggiator and chord pads, sidechain and group buses, Strip Silence, and WAV and MIDI export.</p>
   <p style="color:var(--mute);font-size:13px">Desktop app with VST3/AU hosting: File → Download desktop app.</p>`);
 function dialog(title, html) {
   $('.help')?.remove(); const d = document.createElement('div'); d.className = 'help';
@@ -850,8 +957,7 @@ function showHelp() {
   <h3>Patterns (FL Studio style)</h3><ol><li>Library → <b>+ New pattern</b>, or “Make pattern” on a clip</li><li>Click the pattern in the Library to paint copies — edit one, they all change</li></ol></div>
   <div><h3>Session / clip launcher (Ableton style)</h3><ol><li>Switch to <b>Session</b> at the top</li><li>Double-click a slot to make a clip, or send a clip there with “→ Session”</li><li>Press ▶ on a clip or a whole Scene — it starts on the next bar</li></ol>
   <h3>Pro mixing</h3><ol><li><b>Sidechain Compressor</b>: pick the kick as its key track</li><li>Add track → <b>Group bus</b>, then route tracks to it in the Mixer</li><li>Track ⋯ → <b>Bounce to audio</b> to print a track with its effects</li><li>The Mixer shows a live spectrum of your master</li></ol></div></div>
-  <h3>Double-click</h3><p style="color:var(--mute)">Any knob, fader or slider → reset · a value → type an exact number (e.g. <kbd>2.5k</kbd>) · an empty lane → new clip · a clip → open its editor · the ruler → play from there · the loop bar → loop on/off · the counter → jump to a bar · an effect's name → bypass · a mixer channel's name → its effects · a track's colour strip → next colour · the active tab → make the panel bigger</p>
-  <h3>Shortcuts</h3><p style="color:var(--mute)"><kbd>Space</kbd> play/pause · <kbd>Enter</kbd> stop · <kbd>R</kbd> record · <kbd>M</kbd> metronome · <kbd>Del</kbd> delete clip · <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate · <kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+<kbd>S</kbd> save · <kbd>?</kbd> this guide</p>
+  <div class="cols"><div><h3>Key commands</h3><dl class="keys"><dt>Play / pause</dt><dd><kbd>Space</kbd></dd><dt>Stop, then back to start</dt><dd><kbd>Enter</kbd></dd><dt>Record</dt><dd><kbd>R</kbd></dd><dt>Loop on / off</dt><dd><kbd>C</kbd></dd><dt>Loop the selected clip</dt><dd><kbd>Ctrl+L</kbd></dd><dt>Metronome</dt><dd><kbd>M</kbd></dd><dt>Arrange / Session</dt><dd><kbd>Tab</kbd></dd><dt>Cut / copy / paste</dt><dd><kbd>Ctrl+X / C / V</kbd></dd><dt>Duplicate</dt><dd><kbd>Ctrl+D</kbd></dd><dt>Split at playhead</dt><dd><kbd>B or Ctrl+E</kbd></dd><dt>Split where you click</dt><dd><kbd>Alt-click, or scissors (3)</kbd></dd><dt>Pointer tool</dt><dd><kbd>1</kbd></dd><dt>Quantize clip</dt><dd><kbd>Q</kbd></dd><dt>Nudge clip</dt><dd><kbd>← →  (Alt: fine)</kbd></dd><dt>Delete clip</dt><dd><kbd>Delete</kbd></dd><dt>Undo / redo</dt><dd><kbd>Ctrl+Z / Ctrl+Shift+Z</kbd></dd><dt>Save project</dt><dd><kbd>Ctrl+S</kbd></dd><dt>Play notes</dt><dd><kbd>A to ;   (Z / X octave)</kbd></dd><dt>This guide</dt><dd><kbd>?</kbd></dd></dl></div><div><h3>Double-click</h3><dl class="keys"><dt>Knob, fader or slider</dt><dd>Reset to default</dd><dt>A value</dt><dd>Type an exact number, e.g. 2.5k</dd><dt>Empty lane</dt><dd>New clip</dd><dt>Clip</dt><dd>Open its editor</dd><dt>Ruler</dt><dd>Play from there</dd><dt>Loop bar</dt><dd>Loop on / off</dd><dt>Counter</dt><dd>Jump to a bar</dd><dt>Effect name</dt><dd>Bypass</dd><dt>Mixer channel name</dt><dd>Show its effects</dd><dt>Track colour strip</dt><dd>Next colour</dd><dt>Active tab</dt><dd>Taller panel</dd></dl><p>Right-click a clip for every clip command. Drag a clip\u2019s top corners for fades and its bottom-right corner to loop it. On a Mac use Cmd instead of Ctrl.</p></div></div>
   <p style="color:var(--mute)">Your song saves itself in this browser. Use File → Save project to keep a copy or move it to another computer. For VST/AU plugins (Serum, SHRUB…) use Rose Desktop — see the Plugins tab.</p>
   <button class="tb accent" id="helpClose" style="margin-top:8px">Got it</button></div>`;
   document.body.append(d); d.onclick = e => { if (e.target === d || e.target.id === 'helpClose') d.remove(); }; $('#helpClose').focus();
@@ -869,6 +975,10 @@ addEventListener('keydown', e => {
   if (mod && k === 'd') { e.preventDefault(); duplicateClip(); return; }
   if (mod && k === 's') { e.preventDefault(); $('#bSave').click(); return; }
   if (mod && k === 'e') { e.preventDefault(); splitClip(); return; }
+  if (mod && k === 'x') { e.preventDefault(); copyClip(true); return; }
+  if (mod && k === 'c') { e.preventDefault(); copyClip(false); return; }
+  if (mod && k === 'v') { e.preventDefault(); pasteClip(); return; }
+  if (mod && k === 'l') { e.preventDefault(); loopToSelection(); return; }
   if (mod) return;
   if (e.code === 'Space') { e.preventDefault(); E.playing ? E.stop(true) : E.play(); return; }
   if (e.key === 'Enter') { E.stop(); return; }
@@ -877,6 +987,11 @@ addEventListener('keydown', e => {
       if (!e.repeat) snapshot(); fc.c.start = Math.max(0, +(fc.c.start + d).toFixed(5)); renderLanes(); persist(); toastQuiet(`Nudged to beat ${(fc.c.start + 1).toFixed(3)}`); return; }
   }
   if (e.key === 'Home') { E.seek(0); return; }
+  if (e.key === 'Tab') { e.preventDefault(); setView(UI.view === 'session' ? 'arrange' : 'session'); return; }
+  if (k === 'b' && !e.repeat) { splitClip(); return; }
+  if (k === 'c' && !e.repeat) { $('#bLoop').click(); return; }
+  if (k === 'q' && !e.repeat) { const fc = UI.clip && findClip(UI.clip); if (fc && isMidi(fc.c)) { const tg = fc.c.pattern ? P().patterns[fc.c.pattern] : fc.c, gr = UI.prGrid || 0.25; snapshot(); tg.notes.forEach(n => n.s = Math.round(n.s / gr) * gr); commit(false); toast('Quantized'); } return; }
+  if (k === '1') { setTool('select'); return; } if (k === '3') { setTool('split'); toast('Scissors — click a clip to split it (press 1 for the pointer)'); return; }
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); deleteClip(); return; }
   const i = KEYMAP.indexOf(k);
   if (i >= 0 && !e.repeat) { const t = trk(UI.track); if (t?.kind !== 'inst') return; const p = 12 * (UI.oct + 1) + i; held.add(k); E.liveOn(t.id, p, 0.8); return; }
@@ -907,7 +1022,7 @@ function spectrum(cv, an) {
   const g = cv.getContext('2d'); g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0); g.clearRect(0, 0, W, H);
   an.getFloatFrequencyData(fbuf); const n = an.frequencyBinCount, sr = E.ctx.sampleRate, acc = cssColor('--rose');
   g.strokeStyle = 'rgba(128,128,128,.25)'; g.beginPath(); [100, 1000, 10000].forEach(hz => { const x = Math.log(hz / 20) / Math.log(1000) * W; g.moveTo(x, 0); g.lineTo(x, H); }); g.stroke();
-  g.fillStyle = 'rgba(128,128,128,.7)'; g.font = '10px Inter'; [['100', 100], ['1k', 1000], ['10k', 10000]].forEach(([l, hz]) => g.fillText(l, Math.log(hz / 20) / Math.log(1000) * W + 3, H - 4));
+  g.fillStyle = 'rgba(128,128,128,.7)'; g.font = '10px "IBM Plex Sans", sans-serif'; [['100', 100], ['1k', 1000], ['10k', 10000]].forEach(([l, hz]) => g.fillText(l, Math.log(hz / 20) / Math.log(1000) * W + 3, H - 4));
   g.beginPath(); for (let x = 0; x <= W; x++) { const hz = 20 * Math.pow(1000, x / W), i = Math.min(n - 1, Math.round(hz / (sr / 2) * n)), v = Math.max(0, Math.min(1, (fbuf[i] + 100) / 80)); const y = H - v * (H - 6); x ? g.lineTo(x, y) : g.moveTo(x, y); }
   g.lineTo(W, H); g.lineTo(0, H); g.closePath(); g.fillStyle = acc; g.globalAlpha = 0.35; g.fill(); g.globalAlpha = 1; g.strokeStyle = acc; g.lineWidth = 1.5; g.stroke();
 }

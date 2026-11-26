@@ -40,15 +40,21 @@ void TrackSource::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&
                         if (a >= b) continue;
                         const float g = juce::Decibels::decibelsToGain (c.gainDb); const auto& d = *c.data; const int len2 = d.getNumSamples();
                         const double ratio = c.fileRate / sr, base = c.offsetSec * c.fileRate;
+                        const auto loopS = c.loopLen > 0 && c.loopLen < c.length ? tr.samplesAt (c.loopLen) : (juce::int64) 0;
+                        const double fiS = (double) tr.samplesAt (c.fadeIn), foS = (double) tr.samplesAt (c.fadeOut), clipS = (double) (ce - cs);
                         for (auto t = a; t < b; ++t)
                         {
-                            const double idx = base + (double) (t - cs) * ratio; const int i0 = (int) idx;
-                            if (i0 + 1 >= len2) break;
+                            const auto rel = t - cs, relL = loopS > 0 ? rel % loopS : rel;
+                            const double idx = base + (double) relL * ratio; const int i0 = (int) idx;
+                            if (i0 + 1 >= len2) { if (loopS > 0) continue; break; }
                             const float fr = (float) (idx - i0);
+                            float env = g;
+                            if (fiS > 0 && rel < fiS) env *= (float) (rel / fiS);
+                            if (foS > 0 && rel > clipS - foS) env *= (float) juce::jmax (0.0, (clipS - rel) / foS);
                             for (int ch = 0; ch < buf.getNumChannels(); ++ch)
                             {
                                 const auto* sp = d.getReadPointer (juce::jmin (ch, d.getNumChannels() - 1));
-                                buf.addSample (ch, off + (int) (t - s), (sp[i0] + (sp[i0 + 1] - sp[i0]) * fr) * g);
+                                buf.addSample (ch, off + (int) (t - s), (sp[i0] + (sp[i0 + 1] - sp[i0]) * fr) * env);
                             }
                         }
                     }
@@ -56,13 +62,17 @@ void TrackSource::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&
                 else
                 {
                     for (auto& c : midiClips)
-                        for (auto& nt : c.notes)
-                        {
-                            if (nt.start >= c.length) continue;
-                            const auto on = tr.samplesAt (c.start + nt.start), off2 = tr.samplesAt (c.start + juce::jmin (nt.start + nt.length, c.length));
-                            if (on >= s && on < e) noteOn (nt.pitch, nt.vel, off + (int) (on - s));
-                            if (off2 >= s && off2 < e) noteOff (nt.pitch, off + (int) (off2 - s));
-                        }
+                    {
+                        const double L = c.loopLen > 0 && c.loopLen < c.length ? c.loopLen : c.length;
+                        for (double o = 0; o < c.length - 1e-9; o += L)
+                            for (auto& nt : c.notes)
+                            {
+                                if (nt.start >= L || o + nt.start >= c.length) continue;
+                                const auto on = tr.samplesAt (c.start + o + nt.start), off2 = tr.samplesAt (c.start + juce::jmin (o + nt.start + nt.length, juce::jmin (o + L, c.length)));
+                                if (on >= s && on < e) noteOn (nt.pitch, nt.vel, off + (int) (on - s));
+                                if (off2 >= s && off2 < e) noteOff (nt.pitch, off + (int) (off2 - s));
+                            }
+                    }
                     if (tr.looping.load() && ! tr.recording.load() && e == loopEndS) allOff (juce::jmax (0, off + len - 1));
                 }
             });
@@ -440,10 +450,10 @@ bool Engine::saveSession (const juce::File& f)
         for (auto& s : t->inserts) writeSlot (*e, "Insert", s);
         const juce::ScopedLock sl (t->src()->lock);
         for (auto& c : t->src()->audioClips)
-        { auto* x = e->createNewChildElement ("AudioClip"); x->setAttribute ("file", c.file.getFullPathName()); x->setAttribute ("start", c.start); x->setAttribute ("length", c.length); x->setAttribute ("offset", c.offsetSec); x->setAttribute ("gain", c.gainDb); }
+        { auto* x = e->createNewChildElement ("AudioClip"); x->setAttribute ("file", c.file.getFullPathName()); x->setAttribute ("start", c.start); x->setAttribute ("length", c.length); x->setAttribute ("offset", c.offsetSec); x->setAttribute ("gain", c.gainDb); x->setAttribute ("fadeIn", c.fadeIn); x->setAttribute ("fadeOut", c.fadeOut); x->setAttribute ("loopLen", c.loopLen); }
         for (auto& c : t->src()->midiClips)
         {
-            auto* x = e->createNewChildElement ("MidiClip"); x->setAttribute ("name", c.name); x->setAttribute ("start", c.start); x->setAttribute ("length", c.length);
+            auto* x = e->createNewChildElement ("MidiClip"); x->setAttribute ("name", c.name); x->setAttribute ("start", c.start); x->setAttribute ("length", c.length); x->setAttribute ("loopLen", c.loopLen);
             for (auto& n : c.notes) { auto* ne = x->createNewChildElement ("N"); ne->setAttribute ("p", n.pitch); ne->setAttribute ("s", n.start); ne->setAttribute ("l", n.length); ne->setAttribute ("v", n.vel); }
         }
     }
@@ -482,12 +492,13 @@ bool Engine::loadSession (const juce::File& f)
         {
             juce::File af (x->getStringAttribute ("file"));
             if (addAudioFile (t, af, x->getDoubleAttribute ("start")))
-            { const juce::ScopedLock sl (t.src()->lock); auto& c = t.src()->audioClips.back(); c.length = x->getDoubleAttribute ("length", c.length); c.offsetSec = x->getDoubleAttribute ("offset"); c.gainDb = (float) x->getDoubleAttribute ("gain"); }
+            { const juce::ScopedLock sl (t.src()->lock); auto& c = t.src()->audioClips.back(); c.length = x->getDoubleAttribute ("length", c.length); c.offsetSec = x->getDoubleAttribute ("offset"); c.gainDb = (float) x->getDoubleAttribute ("gain");
+              c.fadeIn = x->getDoubleAttribute ("fadeIn"); c.fadeOut = x->getDoubleAttribute ("fadeOut"); c.loopLen = x->getDoubleAttribute ("loopLen"); }
             else problems.add ("Missing audio: " + af.getFileName());
         }
         for (auto* x : e->getChildWithTagNameIterator ("MidiClip"))
         {
-            MidiClip c; c.name = x->getStringAttribute ("name", "MIDI"); c.start = x->getDoubleAttribute ("start"); c.length = x->getDoubleAttribute ("length", 4);
+            MidiClip c; c.name = x->getStringAttribute ("name", "MIDI"); c.start = x->getDoubleAttribute ("start"); c.length = x->getDoubleAttribute ("length", 4); c.loopLen = x->getDoubleAttribute ("loopLen");
             for (auto* ne : x->getChildWithTagNameIterator ("N")) c.notes.push_back ({ ne->getIntAttribute ("p"), ne->getDoubleAttribute ("s"), ne->getDoubleAttribute ("l"), (float) ne->getDoubleAttribute ("v", 0.8) });
             const juce::ScopedLock sl (t.src()->lock); t.src()->midiClips.push_back (std::move (c));
         }

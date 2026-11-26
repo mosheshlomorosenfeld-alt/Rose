@@ -124,13 +124,21 @@ void Timeline::paint (juce::Graphics& g)
             auto r = box (c.start, c.length, sel.track == ti && sel.clip == ci && sel.audio, c.file.getFileNameWithoutExtension());
             auto& pk = peaksFor (c); if (pk.empty()) continue;
             g.setColour (t.colour); const float mid = r.getCentreY() + 6, amp = (r.getHeight() - 18) / 2;
+            const double L = c.loopLen > 0 && c.loopLen < c.length ? c.loopLen : c.length;
             for (int x = 0; x < (int) r.getWidth(); ++x)
             {
-                const double sec = c.offsetSec + (x / ppb) * 60.0 / tr.bpm.load(); const size_t i = (size_t) (sec * c.fileRate / 256);
-                if (i >= pk.size()) break;
+                const double within = std::fmod (x / ppb, L);
+                if (L < c.length && within < 1.0 / ppb) { g.setColour (col::ink.withAlpha (0.5f)); g.drawVerticalLine ((int) r.getX() + x, r.getY(), r.getBottom()); g.setColour (t.colour); }
+                const double sec = c.offsetSec + within * 60.0 / tr.bpm.load(); const size_t i = (size_t) (sec * c.fileRate / 256);
+                if (i >= pk.size()) continue;
                 const float a = pk[i] * amp * juce::Decibels::decibelsToGain (c.gainDb);
                 g.drawVerticalLine ((int) r.getX() + x, mid - a, mid + a + 1);
             }
+            g.setColour (col::ink);
+            if (c.fadeIn > 0) g.drawLine (r.getX(), r.getBottom(), r.getX() + (float) c.fadeIn * ppb, r.getY(), 1.5f);
+            if (c.fadeOut > 0) g.drawLine (r.getRight() - (float) c.fadeOut * ppb, r.getY(), r.getRight(), r.getBottom(), 1.5f);
+            g.setColour (col::ink.withAlpha (0.6f)); g.fillRect (r.getX(), r.getY(), 6.0f, 6.0f); g.fillRect (r.getRight() - 6, r.getY(), 6.0f, 6.0f);
+            g.setColour (col::rose); g.fillRect (r.getRight() - 8, r.getBottom() - 8, 8.0f, 8.0f);
         }
         for (int ci = 0; ci < (int) s->midiClips.size(); ++ci)
         {
@@ -139,9 +147,15 @@ void Timeline::paint (juce::Graphics& g)
             if (c.notes.empty()) continue;
             int lo = 127, hi = 0; for (auto& n : c.notes) { lo = juce::jmin (lo, n.pitch); hi = juce::jmax (hi, n.pitch); }
             const float rh = juce::jlimit (2.0f, 5.0f, (r.getHeight() - 16) / (float) (hi - lo + 1)); g.setColour (t.colour);
-            for (auto& n : c.notes)
-                if (n.start < c.length)
-                    g.fillRect (r.getX() + (float) n.start * ppb, r.getBottom() - 3 - (float) (n.pitch - lo + 1) * (r.getHeight() - 18) / (float) (hi - lo + 1), juce::jmax (2.0f, (float) n.length * ppb - 1), rh);
+            const double L = c.loopLen > 0 && c.loopLen < c.length ? c.loopLen : c.length;
+            for (double o = 0; o < c.length - 1e-9; o += L)
+            {
+                if (o > 0) { g.setColour (col::ink.withAlpha (0.5f)); g.drawVerticalLine ((int) (r.getX() + (float) o * ppb), r.getY(), r.getBottom()); g.setColour (t.colour.withAlpha (0.75f)); }
+                for (auto& n : c.notes)
+                    if (n.start < L && o + n.start < c.length)
+                        g.fillRect (r.getX() + (float) (o + n.start) * ppb, r.getBottom() - 3 - (float) (n.pitch - lo + 1) * (r.getHeight() - 18) / (float) (hi - lo + 1), juce::jmax (2.0f, (float) juce::jmin (n.length, L - n.start) * ppb - 1), rh);
+            }
+            g.setColour (col::rose); g.fillRect (r.getRight() - 8, r.getBottom() - 8, 8.0f, 8.0f);
         }
     }
 }
@@ -167,12 +181,36 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
         const double ln = sel.audio ? s->audioClips[(size_t) sel.clip].length : s->midiClips[(size_t) sel.clip].length;
         if (e.mods.isPopupMenu())
         {
-            juce::PopupMenu m; m.addItem (1, "Duplicate"); m.addItem (2, "Split at playhead"); m.addItem (3, "Delete");
+            const double here = snap (b, false); const bool looped = sel.audio ? s->audioClips[(size_t) sel.clip].loopLen > 0 : s->midiClips[(size_t) sel.clip].loopLen > 0;
+            juce::PopupMenu m;
+            m.addItem (10, "Cut\tCmd+X"); m.addItem (11, "Copy\tCmd+C"); m.addItem (12, "Paste at playhead\tCmd+V", clipboard.has);
+            m.addItem (1, "Duplicate\tCmd+D"); m.addSeparator();
+            m.addItem (13, "Split here"); m.addItem (2, "Split at playhead\tCmd+E / B");
+            m.addItem (14, looped ? "Loop clip: turn off" : "Loop clip"); m.addItem (15, "Set loop region to clip\tCmd+L");
+            if (sel.audio) { m.addSeparator(); m.addItem (16, "Fade in (1/4 beat)"); m.addItem (17, "Fade out (1 beat)"); m.addItem (18, "Remove fades"); }
             if (! sel.audio) m.addItem (4, "Edit notes...");
-            m.showMenuAsync ({}, [this] (int r) { if (r == 1) duplicateSelected(); else if (r == 2) splitSelected(); else if (r == 3) deleteSelected(); else if (r == 4 && openPianoRoll) openPianoRoll (sel.track, sel.clip); });
+            m.addSeparator(); m.addItem (3, "Delete\tDel");
+            m.showMenuAsync ({}, [this, here] (int r)
+            {
+                switch (r) { case 1: duplicateSelected(); break; case 2: splitSelected(); break; case 3: deleteSelected(); break;
+                    case 4: if (openPianoRoll) openPianoRoll (sel.track, sel.clip); break;
+                    case 10: copySelected (true); break; case 11: copySelected (false); break; case 12: paste(); break; case 13: splitAt (here); break;
+                    case 14: toggleClipLoop(); break; case 15: loopToSelection(); break; case 16: setFade (true, 0.25); break; case 17: setFade (false, 1.0); break;
+                    case 18: setFade (true, 0); setFade (false, 0); break; default: break; }
+            });
             repaint(); return;
         }
-        drag = (e.x > (st + ln) * ppb - 8) ? Drag::resize : Drag::move; dragStartBeat = b; clipStart0 = st; clipLen0 = ln;
+        if (tool == Tool::scissors || e.mods.isAltDown()) { const double at = snap (b, e.mods.isShiftDown()); juce::MessageManager::callAsync ([this, at] { splitAt (at); }); return; }
+        const int clipTop = RULER + ti * LANE + 4, clipBottom = RULER + (ti + 1) * LANE - 4; const float x0 = (float) (st * ppb), x1 = (float) ((st + ln) * ppb);
+        if (sel.audio && e.y < clipTop + 10 && e.x < x0 + 10) { drag = Drag::fadeIn; fade0 = s->audioClips[(size_t) sel.clip].fadeIn; dragStartBeat = b; return; }
+        if (sel.audio && e.y < clipTop + 10 && e.x > x1 - 10) { drag = Drag::fadeOut; fade0 = s->audioClips[(size_t) sel.clip].fadeOut; dragStartBeat = b; return; }
+        if (e.y > clipBottom - 10 && e.x > x1 - 10)
+        {
+            double& lp = sel.audio ? s->audioClips[(size_t) sel.clip].loopLen : s->midiClips[(size_t) sel.clip].loopLen;
+            if (lp <= 0) lp = ln;
+            drag = Drag::clipLoop; dragStartBeat = b; clipStart0 = st; clipLen0 = ln; return;
+        }
+        drag = (e.x > x1 - 8) ? Drag::resize : Drag::move; dragStartBeat = b; clipStart0 = st; clipLen0 = ln;
     }
     repaint();
 }
@@ -185,8 +223,15 @@ void Timeline::mouseDrag (const juce::MouseEvent& e)
         engine.transport.loopEnd = juce::jmax (juce::jmax (dragStartBeat, x), engine.transport.loopStart.load() + 0.25); engine.transport.looping = true; repaint(); return;
     }
     if (drag == Drag::seek) { engine.transport.pos = engine.transport.samplesAt (b); return; }
-    if (sel.clip < 0 || (drag != Drag::move && drag != Drag::resize)) return;
+    if (sel.clip < 0 || drag == Drag::none) return;
     auto* s = engine.tracks[(size_t) sel.track]->src(); const juce::ScopedLock sl (s->lock);
+    if (drag == Drag::fadeIn || drag == Drag::fadeOut)
+    {
+        auto& c = s->audioClips[(size_t) sel.clip]; const double d = (b - dragStartBeat) * (drag == Drag::fadeIn ? 1 : -1);
+        (drag == Drag::fadeIn ? c.fadeIn : c.fadeOut) = juce::jlimit (0.0, c.length / 2, std::round ((fade0 + d) * 16) / 16);
+        repaint(); return;
+    }
+    if (drag == Drag::clipLoop) drag = Drag::resize;
     double& st = sel.audio ? s->audioClips[(size_t) sel.clip].start : s->midiClips[(size_t) sel.clip].start;
     double& ln = sel.audio ? s->audioClips[(size_t) sel.clip].length : s->midiClips[(size_t) sel.clip].length;
     if (drag == Drag::move) st = juce::jmax (0.0, snap (clipStart0 + b - dragStartBeat, fine));
@@ -233,22 +278,82 @@ void Timeline::duplicateSelected()
 }
 void Timeline::splitSelected()
 {
-    if (sel.clip < 0) return; const double at = std::round (engine.positionBeats() * 4) / 4;
+    if (sel.clip < 0) { if (notify) notify ("Select a clip first"); return; }
+    splitAt (std::round (engine.positionBeats() * 4) / 4);
+}
+void Timeline::splitAt (double at)
+{
+    if (sel.clip < 0 || sel.track >= (int) engine.tracks.size()) return;
     auto* s = engine.tracks[(size_t) sel.track]->src(); const juce::ScopedLock sl (s->lock);
     if (sel.audio)
     {
         auto& c = s->audioClips[(size_t) sel.clip]; if (at <= c.start || at >= c.start + c.length) return;
-        auto d = c; const double cut = at - c.start; d.start = at; d.length = c.length - cut; d.offsetSec += cut * 60.0 / engine.transport.bpm.load(); c.length = cut; s->audioClips.push_back (d);
+        auto d = c; const double cut = at - c.start, L = c.loopLen > 0 && c.loopLen < c.length ? c.loopLen : 0;
+        d.start = at; d.length = c.length - cut; d.offsetSec += (L > 0 ? std::fmod (cut, L) : cut) * 60.0 / engine.transport.bpm.load();
+        d.loopLen = 0; if (L > 0) d.length = juce::jmin (d.length, L - std::fmod (cut, L));
+        c.length = cut; if (L > 0 && c.length <= L) c.loopLen = 0; c.fadeOut = 0; d.fadeIn = 0;
+        s->audioClips.push_back (d); sel.clip = (int) s->audioClips.size() - 1;
     }
     else
     {
         auto& c = s->midiClips[(size_t) sel.clip]; if (at <= c.start || at >= c.start + c.length) return;
+        if (c.loopLen > 0 && c.loopLen < c.length)   // expand the loop into real notes first so both halves sound the same
+        {
+            std::vector<Note> all; for (double o = 0; o < c.length - 1e-9; o += c.loopLen) for (auto& n : c.notes) if (n.start < c.loopLen && o + n.start < c.length) all.push_back ({ n.pitch, o + n.start, juce::jmin (n.length, c.loopLen - n.start), n.vel });
+            c.notes = all; c.loopLen = 0;
+        }
         auto d = c; const double cut = at - c.start; d.start = at; d.length = c.length - cut; d.notes.clear();
         for (auto& n : c.notes) if (n.start >= cut) d.notes.push_back ({ n.pitch, n.start - cut, n.length, n.vel });
         c.notes.erase (std::remove_if (c.notes.begin(), c.notes.end(), [cut] (auto& n) { return n.start >= cut; }), c.notes.end()); c.length = cut;
-        s->midiClips.push_back (d);
+        for (auto& n : c.notes) n.length = juce::jmin (n.length, cut - n.start);
+        s->midiClips.push_back (d); sel.clip = (int) s->midiClips.size() - 1;
     }
-    repaint();
+    repaint(); if (changed) changed();
+}
+void Timeline::copySelected (bool cut)
+{
+    if (sel.clip < 0) { if (notify) notify ("Select a clip first"); return; }
+    {
+        auto* s = engine.tracks[(size_t) sel.track]->src(); const juce::ScopedLock sl (s->lock);
+        clipboard.has = true; clipboard.audio = sel.audio;
+        if (sel.audio) clipboard.a = s->audioClips[(size_t) sel.clip]; else clipboard.m = s->midiClips[(size_t) sel.clip];
+    }
+    if (cut) deleteSelected();
+    if (notify) notify (cut ? "Cut - select a track and press Cmd+V" : "Copied - press Cmd+V to paste at the playhead");
+}
+void Timeline::paste()
+{
+    if (! clipboard.has) { if (notify) notify ("Nothing copied yet"); return; }
+    int ti = engine.selected;
+    auto fits = [&] (int i) { return i >= 0 && i < (int) engine.tracks.size() && engine.tracks[(size_t) i]->isAudio == clipboard.audio; };
+    if (! fits (ti)) { ti = -1; for (int i = 0; i < (int) engine.tracks.size(); ++i) if (fits (i)) { ti = i; break; } }
+    if (ti < 0) { if (notify) notify ("No track can hold this clip"); return; }
+    const double at = std::round (engine.positionBeats() * 4) / 4;
+    auto* s = engine.tracks[(size_t) ti]->src(); const juce::ScopedLock sl (s->lock);
+    if (clipboard.audio) { auto c = clipboard.a; c.start = at; s->audioClips.push_back (c); sel = { ti, (int) s->audioClips.size() - 1, true }; }
+    else { auto c = clipboard.m; c.start = at; s->midiClips.push_back (c); sel = { ti, (int) s->midiClips.size() - 1, false }; }
+    updateSize(); repaint(); if (changed) changed();
+}
+void Timeline::toggleClipLoop()
+{
+    if (sel.clip < 0) return; auto* s = engine.tracks[(size_t) sel.track]->src(); const juce::ScopedLock sl (s->lock);
+    double& lp = sel.audio ? s->audioClips[(size_t) sel.clip].loopLen : s->midiClips[(size_t) sel.clip].loopLen;
+    double& ln = sel.audio ? s->audioClips[(size_t) sel.clip].length : s->midiClips[(size_t) sel.clip].length;
+    if (lp > 0) lp = 0; else { lp = ln; ln *= 2; }
+    updateSize(); repaint(); if (notify) notify (lp > 0 ? "Clip loop on - drag the pink corner to repeat it more" : "Clip loop off");
+}
+void Timeline::loopToSelection()
+{
+    if (sel.clip < 0) { engine.transport.looping = ! engine.transport.looping.load(); repaint(); if (changed) changed(); return; }
+    auto* s = engine.tracks[(size_t) sel.track]->src(); const juce::ScopedLock sl (s->lock);
+    const double st = sel.audio ? s->audioClips[(size_t) sel.clip].start : s->midiClips[(size_t) sel.clip].start;
+    const double ln = sel.audio ? s->audioClips[(size_t) sel.clip].length : s->midiClips[(size_t) sel.clip].length;
+    engine.transport.loopStart = st; engine.transport.loopEnd = st + ln; engine.transport.looping = true; repaint(); if (changed) changed();
+}
+void Timeline::setFade (bool in, double beats)
+{
+    if (sel.clip < 0 || ! sel.audio) return; auto* s = engine.tracks[(size_t) sel.track]->src(); const juce::ScopedLock sl (s->lock);
+    auto& c = s->audioClips[(size_t) sel.clip]; (in ? c.fadeIn : c.fadeOut) = juce::jlimit (0.0, c.length / 2, beats); repaint();
 }
 
 //============================================================================== TrackHeader
@@ -385,6 +490,12 @@ MainComponent::MainComponent()
 {
     setLookAndFeel (&look);
     for (auto* b : { &bHome, &bPlay, &bStop, &bRec, &bLoop, &bClick, &bAddAudio, &bAddInst, &bMaster, &bPlugins, &bAudio, &bOpen, &bSave, &bBounce, &bAbout }) addAndMakeVisible (b);
+    for (auto* b : { &bPointer, &bScissors }) { addAndMakeVisible (b); b->setClickingTogglesState (true); b->setRadioGroupId (77); }
+    bPointer.setToggleState (true, juce::dontSendNotification);
+    bPointer.setTooltip ("Pointer (1): move, resize, fade and loop clips"); bScissors.setTooltip ("Scissors (3): click a clip to split it - or Alt-click with any tool");
+    bPointer.onClick = [this] { timeline.tool = Timeline::Tool::pointer; timeline.setMouseCursor (juce::MouseCursor::NormalCursor); };
+    bScissors.onClick = [this] { timeline.tool = Timeline::Tool::scissors; timeline.setMouseCursor (juce::MouseCursor::CrosshairCursor); };
+    timeline.notify = [this] (const juce::String& m) { statusText = m; statusUntil = juce::Time::getMillisecondCounter() + 2500; repaint(); };
     bAbout.setTooltip ("About Rose Studio");
     bAbout.onClick = [] { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Rose Studio " + juce::String (ProjectInfo::versionString),
         "by Rosenfeld Productions\n\nHosts VST3" + juce::String ((juce::SystemStats::getOperatingSystemType() & juce::SystemStats::MacOSX) != 0 ? " and Audio Unit" : "") + " plugins, 13 built-in effects, Rose Synth, recording, piano roll, sessions and offline bounce.\n\nShortcuts: Space play, R record, Cmd+D duplicate, Cmd+E split, Cmd+S save, Delete remove clip.\nDouble-click a fader or knob to reset it."); };
@@ -418,7 +529,7 @@ MainComponent::MainComponent()
         auto* w = new juce::DocumentWindow ("Piano roll — " + engine.tracks[(size_t) ti]->name, col::panel, juce::DocumentWindow::closeButton);
         struct Holder : juce::Viewport { };
         auto* vp = new juce::Viewport(); auto* pr = new PianoRoll (engine, *engine.tracks[(size_t) ti], ci); pr->setSize (1000, (108 - 24 + 1) * 6); vp->setViewedComponent (pr, true);
-        vp->setSize (1000, 480); w->setContentOwned (vp, true); w->setUsingNativeTitleBar (true); w->setResizable (true, false); w->centreWithSize (1000, 480); w->setVisible (true);
+        vp->setSize (1000, 480); w->setContentOwned (vp, true); w->setUsingNativeTitleBar (true); w->setResizable (true, false); w->centreWithSize (1000, 480); w->setAlwaysOnTop (true); w->setVisible (true);
         struct Closer { static void install (juce::DocumentWindow* win, std::unique_ptr<juce::DocumentWindow>& slot) { slot.reset (win); } };
         Closer::install (w, pianoRollWindow);
     };
@@ -438,13 +549,19 @@ MainComponent::~MainComponent() { engine.removeChangeListener (this); pianoRollW
 void MainComponent::paint (juce::Graphics& g)
 {
     g.fillAll (col::bg); g.setColour (col::panel); g.fillRect (0, 0, getWidth(), 48);
-    g.setColour (col::rose); g.setFont (juce::FontOptions (24.0f, juce::Font::bold)); g.drawText ("Rose", 12, 8, 70, 32, juce::Justification::left);
+    g.setColour (col::ink); g.setFont (juce::FontOptions (17.0f, juce::Font::bold)); g.drawText ("Rose", 12, 8, 70, 32, juce::Justification::left);
+    if (statusText.isNotEmpty() && juce::Time::getMillisecondCounter() < statusUntil)
+    {
+        auto r = juce::Rectangle<int> (0, 0, 420, 30).withCentre ({ getWidth() / 2, getHeight() - 90 });
+        g.setColour (col::ink); g.fillRoundedRectangle (r.toFloat(), 15); g.setColour (col::bg); g.setFont (14.0f); g.drawText (statusText, r, juce::Justification::centred);
+    }
 }
 void MainComponent::resized()
 {
     auto r = getLocalBounds(); auto top = r.removeFromTop (48).reduced (8, 8); top.removeFromLeft (70);
     for (auto* b : { &bHome, &bPlay, &bStop, &bRec, &bLoop, &bClick }) { b->setBounds (top.removeFromLeft (b == &bHome ? 36 : 54)); top.removeFromLeft (4); }
-    top.removeFromLeft (6); time.setBounds (top.removeFromLeft (120)); top.removeFromLeft (8);
+    top.removeFromLeft (6); bPointer.setBounds (top.removeFromLeft (62)); top.removeFromLeft (2); bScissors.setBounds (top.removeFromLeft (70)); top.removeFromLeft (8);
+    time.setBounds (top.removeFromLeft (120)); top.removeFromLeft (8);
     bpmLabel.setBounds (top.removeFromLeft (36)); bpm.setBounds (top.removeFromLeft (110)); top.removeFromLeft (10);
     bAbout.setBounds (top.removeFromRight (32)); top.removeFromRight (4);
     for (auto* b : { &bBounce, &bSave, &bOpen, &bAudio, &bPlugins, &bMaster, &bAddInst, &bAddAudio }) { b->setBounds (top.removeFromRight (b == &bAddInst ? 104 : b == &bAudio ? 100 : 82)); top.removeFromRight (4); }
@@ -481,6 +598,14 @@ void MainComponent::timerCallback()
         if (engine.transport.recording.load()) timeline.repaint();
     }
     for (auto* h : headers) h->repaint (h->getWidth() - 10, 0, 10, h->getHeight());
+    if (statusText.isNotEmpty() && juce::Time::getMillisecondCounter() >= statusUntil) { statusText = {}; repaint(); }
+    // keep plugin and piano-roll windows above Rose, but not above other apps when Rose is in the background
+    if (++floatCheck % 10 == 0)
+    {
+        const bool fg = juce::Process::isForegroundProcess();
+        for (auto* w : pluginWindows) if (w->isAlwaysOnTop() != fg) w->setAlwaysOnTop (fg);
+        if (pianoRollWindow != nullptr && pianoRollWindow->isAlwaysOnTop() != fg) pianoRollWindow->setAlwaysOnTop (fg);
+    }
 }
 bool MainComponent::keyPressed (const juce::KeyPress& k)
 {
@@ -488,6 +613,18 @@ bool MainComponent::keyPressed (const juce::KeyPress& k)
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) { timeline.deleteSelected(); return true; }
     if (k == juce::KeyPress ('d', juce::ModifierKeys::commandModifier, 0)) { timeline.duplicateSelected(); return true; }
     if (k == juce::KeyPress ('e', juce::ModifierKeys::commandModifier, 0)) { timeline.splitSelected(); return true; }
+    if (k == juce::KeyPress ('x', juce::ModifierKeys::commandModifier, 0)) { timeline.copySelected (true); return true; }
+    if (k == juce::KeyPress ('c', juce::ModifierKeys::commandModifier, 0)) { timeline.copySelected (false); return true; }
+    if (k == juce::KeyPress ('v', juce::ModifierKeys::commandModifier, 0)) { timeline.paste(); return true; }
+    if (k == juce::KeyPress ('l', juce::ModifierKeys::commandModifier, 0)) { timeline.loopToSelection(); bLoop.setToggleState (engine.transport.looping.load(), juce::dontSendNotification); return true; }
+    if (! k.getModifiers().isAnyModifierKeyDown())
+    {
+        const auto ch = juce::CharacterFunctions::toLowerCase (k.getTextCharacter());
+        if (ch == 'b') { timeline.splitSelected(); return true; }
+        if (ch == 'c') { bLoop.triggerClick(); return true; }
+        if (ch == '1') { bPointer.triggerClick(); return true; }
+        if (ch == '3') { bScissors.triggerClick(); return true; }
+    }
     if (k == juce::KeyPress ('s', juce::ModifierKeys::commandModifier, 0)) { save(); return true; }
     if (k == juce::KeyPress ('o', juce::ModifierKeys::commandModifier, 0)) { open(); return true; }
     if (k.getTextCharacter() == 'r' && ! k.getModifiers().isAnyModifierKeyDown()) { bRec.triggerClick(); return true; }

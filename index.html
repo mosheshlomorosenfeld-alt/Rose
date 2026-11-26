@@ -6,12 +6,13 @@
 <title>Rose Studio</title>
 <meta name="description" content="Rose — a browser DAW by Rosenfeld Productions: arrange, record, sequence, mix and master.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/rose.css">
 <link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/logo.svg" type="image/svg+xml">
 <link rel="icon" href="icons/favicon-64.png" type="image/png">
 <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
-<meta name="theme-color" content="#16121d">
+<meta name="theme-color" content="#2b2c30">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Rose">
 <script>try{const s=localStorage.getItem('rose:skin');if(s)document.documentElement.dataset.skin=s}catch{}</script>
@@ -31,7 +32,7 @@
 </svg>
 <div id="app">
   <header class="top">
-    <button class="brand" id="bAbout" title="About Rose Studio">Rose</button>
+    <button class="brand" id="bAbout" title="About Rose Studio"><img src="icons/logo.svg" alt="" width="28" height="28">Rose</button>
     <div class="grp" role="group" aria-label="Transport">
       <button id="bHome" class="ib" title="Back to start (Home)" aria-label="Back to start"><svg><use href="#i-home"/></svg></button>
       <button id="bPlay" class="ib play" title="Play / pause (Space)" aria-label="Play"><svg><use href="#i-play"/></svg></button>
@@ -40,6 +41,7 @@
       <button id="bLoop" class="tg" aria-label="Loop" title="Loop — loops the highlighted region (drag across the top of the ruler to set it)"><svg width="16" height="16"><use href="#i-loop"/></svg><span class="lbl">&nbsp;Loop</span></button>
       <button id="bMet" class="tg" aria-label="Metronome" title="Metronome / click (M)"><svg width="16" height="16"><use href="#i-click"/></svg><span class="lbl">&nbsp;Click</span></button>
     </div>
+    <div class="grp seg2" role="group" aria-label="Edit tool"><button id="tSel" class="tg on" title="Pointer tool (1): move, resize, fade and loop clips" aria-label="Pointer tool"><svg width="16" height="16" viewBox="0 0 16 16"><path d="M3 2l9 6-4 1 2 5-2 1-2-5-3 3z" fill="currentColor"/></svg></button><button id="tSplit" class="tg" title="Scissors tool (3): click a clip to split it — or Alt-click with any tool" aria-label="Scissors tool"><svg width="16" height="16" viewBox="0 0 16 16"><circle cx="4" cy="12" r="2.3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="12" cy="12" r="2.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M5.5 10.3 12 2M10.5 10.3 4 2" stroke="currentColor" stroke-width="1.6"/></svg></button></div>
     <div class="grp seg2" role="group" aria-label="View"><button id="vArr" class="tg on" title="Arrangement: your song on a timeline">Arrange</button><button id="vSes" class="tg" title="Session: launch clips and scenes live (Ableton style)">Session</button></div>
     <div class="lcd" title="Bar . beat . sixteenth"><span id="pos">1.1.1</span><small id="clock">0:00.0</small></div>
     <label class="bpm" title="Tempo in beats per minute"><span class="lbl">Tempo</span> <input id="bpm" type="number" min="40" max="240" step="1" value="126"></label>
@@ -50,7 +52,7 @@
       <button id="bLib" class="tb" title="Show or hide the sounds & effects library"><svg><use href="#i-lib"/></svg><span class="lbl">&nbsp;Library</span></button>
       <button id="bFile" class="tb" aria-haspopup="true"><svg><use href="#i-file"/></svg><span class="lbl">&nbsp;File</span></button>
       <button id="bUndo" class="tb" title="Undo (Ctrl+Z)" aria-label="Undo">↶</button><button id="bRedo" class="tb" title="Redo (Ctrl+Shift+Z)" aria-label="Redo">↷</button>
-      <select id="skin" aria-label="Colour theme" title="Colour theme"><option value="">Plum</option><option value="ocean">Ocean</option><option value="sunset">Sunset</option><option value="studio">Studio light</option></select>
+      <select id="skin" aria-label="Colour theme" title="Colour theme"><option value="">Graphite</option><option value="slate">Slate</option><option value="daylight">Daylight</option></select>
       <button id="bHelp" class="tb" title="How to use Rose (?)" aria-label="Help">?</button>
     </div>
   </header>
@@ -79,33 +81,33 @@
 </div>
 
 <div class="pop" id="addPop" hidden>
-  <button data-add="synth"><span class="ic">♪</span><b>Instrument</b><small>Synth for leads, chords, bass and pads</small></button>
-  <button data-add="drums"><span class="ic">●</span><b>Drums</b><small>Kick, snare, hats — click steps to make a beat</small></button>
-  <button data-add="audio"><span class="ic">~</span><b>Audio / vocals</b><small>Record a mic or drop in audio files</small></button>
-  <button data-add="sampler"><span class="ic">S</span><b>Sampler</b><small>Play any sound across the keyboard</small></button>
-  <button data-add="group"><span class="ic">G</span><b>Group bus</b><small>Mix several tracks together (drums, vocals…)</small></button>
-  <button data-add="external"><span class="ic">M</span><b>External MIDI</b><small>Play SHRUB, an FM-1 or a hardware synth</small></button>
+  <button data-add="synth"><b>Instrument</b><small>Synth for leads, chords, bass and pads</small></button>
+  <button data-add="drums"><b>Drums</b><small>Kick, snare, hats — click steps to make a beat</small></button>
+  <button data-add="audio"><b>Audio / vocals</b><small>Record a mic or drop in audio files</small></button>
+  <button data-add="sampler"><b>Sampler</b><small>Play any sound across the keyboard</small></button>
+  <button data-add="group"><b>Group bus</b><small>Mix several tracks together (drums, vocals…)</small></button>
+  <button data-add="external"><b>External MIDI</b><small>Play SHRUB, an FM-1 or a hardware synth</small></button>
 </div>
 <div class="pop" id="filePop" hidden>
-  <button id="bNew"><span class="ic">+</span><b>New song</b><small>Start fresh (you can undo)</small></button>
-  <button id="bOpenBtn"><span class="ic">↑</span><b>Open project…</b><small>A .rose file</small></button>
-  <button id="bSave"><span class="ic">↓</span><b>Save project</b><small>Download a .rose file (Ctrl+S)</small></button>
-  <button id="bImportBtn"><span class="ic">~</span><b>Import audio…</b><small>WAV, MP3, M4A, OGG, FLAC</small></button>
-  <button id="bExport"><span class="ic">♫</span><b>Export WAV</b><small>Mixdown of the whole song</small></button>
-  <button id="bInstall"><span class="ic">⇩</span><b>Install Rose app</b><small>Get Rose on your Dock / desktop — works offline</small></button>
-  <button id="bDownload"><span class="ic">◆</span><b>Download desktop app</b><small>Mac &amp; Windows — runs VST3 / AU plugins</small></button>
+  <button id="bNew"><b>New song</b><small>Start fresh (you can undo)</small></button>
+  <button id="bOpenBtn"><b>Open project…</b><small>A .rose file</small></button>
+  <button id="bSave"><b>Save project</b><small>Download a .rose file (Ctrl+S)</small></button>
+  <button id="bImportBtn"><b>Import audio…</b><small>WAV, MP3, M4A, OGG, FLAC</small></button>
+  <button id="bExport"><b>Export WAV</b><small>Mixdown of the whole song</small></button>
+  <button id="bInstall"><b>Install Rose app</b><small>Get Rose on your Dock / desktop — works offline</small></button>
+  <button id="bDownload"><b>Download desktop app</b><small>Mac &amp; Windows — runs VST3 / AU plugins</small></button>
 </div>
 <input id="fOpen" type="file" accept=".rose,application/json" hidden>
 <input id="fImport" type="file" accept="audio/*" multiple hidden>
 
 <div class="start" id="startScreen"><div>
-  <img src="icons/icon-192.png" alt="" width="84" height="84" style="border-radius:20px"><h1>Rose Studio</h1><p>Make beats, record vocals, mix and master. By Rosenfeld Productions.</p>
+  <img src="icons/icon-192.png" alt="" width="84" height="84" style="border-radius:20px"><h1>Rose Studio</h1><p>Rosenfeld Productions</p>
   <div class="choices">
     <button class="choice main" id="bStart"><b id="startLabel">Start with a demo beat</b><span id="startSub">Drums, bass and chords ready to play</span></button>
     <button class="choice" id="bBlank"><b>Blank song</b><span>Empty tracks, your idea</span></button>
     <button class="choice" id="bOpenStart"><b>Open a project</b><span>A .rose file you saved</span></button>
   </div>
-  <p class="small">Press <b>?</b> any time for help · Space plays · the A–; keys play notes</p>
+  <p class="small">Press ? for help. Space plays. The A to ; keys play notes.</p>
 </div></div>
 <div class="toast" id="toast" role="status"></div>
 <script type="module" src="js/app.js"></script>
