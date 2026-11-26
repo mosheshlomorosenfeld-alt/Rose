@@ -124,17 +124,20 @@ inline juce::StringArray soundNames() { juce::StringArray s; for (auto& x : soun
 
 // Where the sample folder lives: inside the Mac app (Contents/Resources/sounds), next to the Windows exe, or in the repo while developing.
 inline juce::File& soundsDirOverride() { static juce::File f; return f; }
-inline juce::File findSoundsDir()
+// Shipped content folders ("sounds", "loops"): inside the Mac app (Contents/Resources), next to the Windows exe, or in the repo while developing.
+inline juce::File findResourceDir (const juce::String& name)
 {
-    if (soundsDirOverride().getChildFile ("index.json").existsAsFile()) return soundsDirOverride();
+    if (name == "sounds" && soundsDirOverride().getChildFile ("index.json").existsAsFile()) return soundsDirOverride();
+    if (name != "sounds" && soundsDirOverride().getSiblingFile (name).getChildFile ("index.json").existsAsFile()) return soundsDirOverride().getSiblingFile (name);
     const auto exeDir = juce::File::getSpecialLocation (juce::File::currentExecutableFile).getParentDirectory();
-    for (auto c : { exeDir.getSiblingFile ("Resources").getChildFile ("sounds"), exeDir.getChildFile ("sounds") })
+    for (auto c : { exeDir.getSiblingFile ("Resources").getChildFile (name), exeDir.getChildFile (name) })
         if (c.getChildFile ("index.json").existsAsFile()) return c;
     for (auto start : { exeDir, juce::File::getCurrentWorkingDirectory() })
         for (auto d = start; d.getParentDirectory() != d; d = d.getParentDirectory())
-            if (d.getChildFile ("sounds/index.json").existsAsFile()) return d.getChildFile ("sounds");
+            if (d.getChildFile (name + "/index.json").existsAsFile()) return d.getChildFile (name);
     return {};
 }
+inline juce::File findSoundsDir() { return findResourceDir ("sounds"); }
 
 class RoseSounds : public BuiltIn, private APVTS::Listener
 {

@@ -12,6 +12,11 @@ namespace col
     const juce::Colour bg (0xff1d1e21), panel (0xff2b2c30), panel2 (0xff323338), line (0xff3b3c42), ink (0xffe6e4df), mute (0xff9a978f), rose (0xffe0708a), lane (0xff212226), lane2 (0xff24252a);
 }
 
+} // namespace rose
+#include "Browser.h"
+namespace rose
+{
+
 //==============================================================================
 class RoseLook : public juce::LookAndFeel_V4
 {
@@ -67,9 +72,16 @@ private:
 };
 
 //==============================================================================
-class Timeline : public juce::Component, public juce::FileDragAndDropTarget
+class Timeline : public juce::Component, public juce::FileDragAndDropTarget, public juce::DragAndDropTarget
 {
 public:
+    // loops and effects dragged from the Browser
+    bool isInterestedInDragSource (const SourceDetails& d) override { return isRoseDrag (d, "loop:") || isRoseDrag (d, "fx:"); }
+    void itemDragMove (const SourceDetails& d) override { dropTrack = (d.localPosition.y - RULER) / LANE; dropBeat = juce::jmax (0.0, std::floor ((double) d.localPosition.x / ppb / 4) * 4); dropIsLoop = isRoseDrag (d, "loop:"); repaint(); }
+    void itemDragExit (const SourceDetails&) override { dropTrack = -2; repaint(); }
+    void itemDropped (const SourceDetails&) override;
+    int dropTrack = -2; double dropBeat = 0; bool dropIsLoop = false; std::function<int (const LoopInfo&)> loopSemis;
+    void pitchSelected (int semis);
     explicit Timeline (Engine& e) : engine (e) {}
     void paint (juce::Graphics&) override;
     void mouseDown (const juce::MouseEvent&) override;
@@ -109,13 +121,19 @@ public:
 };
 
 //==============================================================================
-class TrackHeader : public juce::Component
+class TrackHeader : public juce::Component, public juce::DragAndDropTarget
 {
 public:
     TrackHeader (Engine& e, int i);
     void paint (juce::Graphics&) override;
     void resized() override;
-    void mouseDown (const juce::MouseEvent&) override { engine.selectTrack (index); }
+    void mouseDown (const juce::MouseEvent&) override;
+    bool isInterestedInDragSource (const SourceDetails& d) override { return isRoseDrag (d, "fx:") || isRoseDrag (d, "loop:"); }
+    void itemDragEnter (const SourceDetails&) override { hover = true; repaint(); }
+    void itemDragExit (const SourceDetails&) override { hover = false; repaint(); }
+    void itemDropped (const SourceDetails&) override;
+    std::function<void()> changed; std::function<double()> playhead; std::function<int (const LoopInfo&)> loopSemis;
+    bool hover = false;
     void refresh();
     int index;
 private:
@@ -125,10 +143,16 @@ private:
 };
 
 //==============================================================================
-class DevicePanel : public juce::Component
+class DevicePanel : public juce::Component, public juce::DragAndDropTarget
 {
 public:
     explicit DevicePanel (Engine& e) : engine (e) {}
+    bool isInterestedInDragSource (const SourceDetails& d) override { return isRoseDrag (d, "fx:"); }
+    void itemDragEnter (const SourceDetails&) override { hover = true; repaint(); }
+    void itemDragExit (const SourceDetails&) override { hover = false; repaint(); }
+    void itemDropped (const SourceDetails& d) override { hover = false; addFxTo (engine, chain(), d.description.toString().fromFirstOccurrenceOf ("fx:", false, false)); refresh(); }
+    void paintOverChildren (juce::Graphics& g) override { if (hover) { g.setColour (col::rose); g.drawRect (getLocalBounds(), 2); } }
+    bool hover = false;
     void refresh();
     void resized() override;
     void paint (juce::Graphics& g) override { g.fillAll (col::panel2); }
@@ -143,7 +167,7 @@ private:
 };
 
 //==============================================================================
-class MainComponent : public juce::Component, private juce::Timer, private juce::ChangeListener
+class MainComponent : public juce::Component, public juce::DragAndDropContainer, private juce::Timer, private juce::ChangeListener
 {
 public:
     MainComponent();
@@ -163,12 +187,13 @@ private:
     Engine engine;
     juce::TextButton bHome { "|<" }, bPlay { "Play" }, bStop { "Stop" }, bRec { "Rec" }, bLoop { "Loop" }, bClick { "Click" },
                      bAddAudio { "+ Audio" }, bAddInst { "+ Instrument" }, bMaster { "Master FX" }, bPlugins { "Plugins..." }, bAudio { "Audio/MIDI..." },
-                     bOpen { "Open" }, bSave { "Save" }, bBounce { "Bounce WAV" }, bAbout { "?" }, bTemplates { "Templates" }, bUpdate { "Update" }, bPointer { "Pointer" }, bScissors { "Scissors" };
+                     bOpen { "Open" }, bSave { "Save" }, bBounce { "Bounce WAV" }, bAbout { "?" }, bTemplates { "Templates" }, bUpdate { "Update" }, bBrowser { "Browser" }, bFile { "File" }, bPointer { "Pointer" }, bScissors { "Scissors" };
     juce::Slider bpm; juce::Label time, bpmLabel { {}, "BPM" };
     juce::Component headerHolder; juce::OwnedArray<TrackHeader> headers;
     struct SyncViewport : juce::Viewport { std::function<void()> moved; void visibleAreaChanged (const juce::Rectangle<int>&) override { if (moved) moved(); } } viewport;
     Timeline timeline { engine }; PlayheadLine playhead;
     DevicePanel devices { engine };
+    BrowserPanel browser { engine }; bool showBrowser = true;   // declared after engine: it reads the loop library
     juce::MidiKeyboardComponent keys { engine.keyboard, juce::MidiKeyboardComponent::horizontalKeyboard };
     juce::OwnedArray<PluginWindow> pluginWindows;
     std::unique_ptr<juce::DocumentWindow> pianoRollWindow;

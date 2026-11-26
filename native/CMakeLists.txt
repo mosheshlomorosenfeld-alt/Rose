@@ -29,11 +29,13 @@ target_sources(Rose PRIVATE Source/Main.cpp Source/Engine.cpp Source/MainCompone
 # song templates are shared with the web app and compiled in
 juce_add_binary_data(RoseData SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/../templates/templates.json")
 
-# Rose Sounds samples (open-source FluidR3 GM, ~10 MB) ship inside the app: Contents/Resources/sounds on Mac, next to the exe on Windows
+# Rose Sounds samples (open-source FluidR3 GM, ~10 MB) and the CC0 loop library (~7 MB) ship inside the app: Contents/Resources/sounds on Mac, next to the exe on Windows
 if(APPLE)
-    add_custom_command(TARGET Rose POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/../sounds" "$<TARGET_BUNDLE_CONTENT_DIR:Rose>/Resources/sounds")
+    add_custom_command(TARGET Rose POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/../sounds" "$<TARGET_BUNDLE_CONTENT_DIR:Rose>/Resources/sounds"
+                                         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/../loops" "$<TARGET_BUNDLE_CONTENT_DIR:Rose>/Resources/loops")
 else()
-    add_custom_command(TARGET Rose POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/../sounds" "$<TARGET_FILE_DIR:Rose>/sounds")
+    add_custom_command(TARGET Rose POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/../sounds" "$<TARGET_FILE_DIR:Rose>/sounds"
+                                         COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_CURRENT_SOURCE_DIR}/../loops" "$<TARGET_FILE_DIR:Rose>/loops")
 endif()
 
 target_compile_definitions(Rose PRIVATE

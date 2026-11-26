@@ -10,10 +10,19 @@ struct AudioClip
 {
     juce::File file; double start = 0, length = 4, offsetSec = 0, fadeIn = 0, fadeOut = 0, loopLen = 0; float gainDb = 0;   // fades and loop in beats (loopLen 0 = no loop)
     std::shared_ptr<juce::AudioBuffer<float>> data; double fileRate = 44100;
+    float pitch = 0;          // semitones (fractions = cents); speed unchanged
+    double srcBpm = 0;        // library loops: tempo they were recorded at; they then follow the song tempo
+    juce::String name;
 };
-struct MidiClip { juce::String name { "MIDI" }; double start = 0, length = 4, loopLen = 0; std::vector<Note> notes; };
+struct MidiClip { juce::String name { "MIDI" }; double start = 0, length = 4, loopLen = 0; std::vector<Note> notes; int transpose = 0; };
 
 class Engine;
+
+// CC0 loop library (loops/index.json, shared with the web app)
+struct LoopInfo { juce::String id, name, cat, key; double bpm = 0, beats = 0; };
+const std::vector<LoopInfo>& loopLibrary();
+juce::File loopFile (const LoopInfo&);
+int keyShift (const juce::String& fromKey, const juce::String& toKey);   // nearest way up or down, -5..+6
 
 //==============================================================================
 // Shared transport, read by every processor on the audio thread.
@@ -69,10 +78,12 @@ class TrackSource : public juce::AudioProcessor
 public:
     TrackSource (Engine& e, bool audio);
     const juce::String getName() const override { return "Track source"; }
-    void prepareToPlay (double, int) override {}
+    void prepareToPlay (double, int) override;
     void releaseResources() override {}
     void processBlock (juce::AudioBuffer<float>&, juce::MidiBuffer&) override;
     double getTailLengthSeconds() const override { return 0; }
+    std::atomic<int> transpose { 0 };          // whole-track transpose (audio + MIDI + live keys)
+    std::atomic<bool> drumKit { false };       // drum kits never transpose: each note is a different drum
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return true; }
     juce::AudioProcessorEditor* createEditor() override { return nullptr; }
@@ -93,6 +104,7 @@ public:
     const bool isAudio;
 private:
     Engine& engine; std::vector<int> sounding;
+    PitchCore shifter[2]; juce::AudioBuffer<float> pitched; int pitchedHold = 0; float pitchedSemis = 0;
 };
 
 //==============================================================================
@@ -175,6 +187,11 @@ public:
     void rewire();
     void updateMix();
     bool addAudioFile (Track&, const juce::File&, double startBeat);
+    // drops a library loop on a track at a beat (a new audio track if that one is MIDI or the spot is taken); returns the track index
+    int placeLoop (const LoopInfo&, int trackIndex, double beat, int semis = 0);
+    // audition a library loop at the song tempo (and key), looping; nullptr stops
+    void previewLoop (const LoopInfo*, int semis = 0);
+    juce::String previewingId() const { const juce::SpinLock::ScopedLockType l (previewLock); return preview ? preview->id : juce::String(); }
     void selectTrack (int i);
     double songEndBeats() const;
 
@@ -205,6 +222,9 @@ public:
     const float* const* currentInput = nullptr; int currentNumInputs = 0;
 
 private:
+    struct Preview { juce::String id; juce::AudioBuffer<float> data; double rate = 1, pos = 0, end = 0; PitchCore::Params pr; PitchCore core[2]; bool shift = false; };
+    std::unique_ptr<Preview> preview; juce::SpinLock previewLock;
+
     void handleIncomingMidiMessage (juce::MidiInput*, const juce::MidiMessage&) override;
     juce::AudioProcessorGraph::Node::Ptr makeNode (std::unique_ptr<juce::AudioProcessor>);
     std::unique_ptr<juce::AudioProcessor> createProcessor (const juce::String& builtInId, const juce::PluginDescription* desc, juce::String& error);

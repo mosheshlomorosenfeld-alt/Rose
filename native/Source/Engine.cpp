@@ -11,9 +11,18 @@ TrackSource::TrackSource (Engine& e, bool audio)
     : AudioProcessor (BusesProperties().withOutput ("Out", juce::AudioChannelSet::stereo())), isAudio (audio), engine (e)
 { sounding.reserve (128); }
 
+void TrackSource::prepareToPlay (double sr, int bs)
+{
+    for (auto& s : shifter) s.prepare (sr);
+    pitched.setSize (2, juce::jmax (bs, 512) * 2); pitched.clear(); pitchedHold = 0;
+}
+
 void TrackSource::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer& midi)
 {
     buf.clear(); midi.clear();
+    if (pitched.getNumSamples() < buf.getNumSamples()) pitched.setSize (2, buf.getNumSamples(), false, false, true);
+    pitched.clear(); bool anyPitched = false;
+    const int tp = drumKit.load() ? 0 : transpose.load();
     auto& tr = engine.transport; const int n = buf.getNumSamples();
     const auto start = tr.pos.load(); const double sr = tr.sampleRate;
 
@@ -35,11 +44,16 @@ void TrackSource::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&
                     for (auto& c : audioClips)
                     {
                         if (! c.data) continue;
-                        const auto cs = tr.samplesAt (c.start), ce = tr.samplesAt (c.start + c.length);
+                        const double tempo = c.srcBpm > 0 ? tr.bpm.load() / c.srcBpm : 1.0;   // loops follow the song tempo
+                        // independent pitch: shifted through the pitch engine, read ~20 ms early to cancel its latency
+                        const float semis = c.pitch + (float) tp - (c.srcBpm > 0 ? (float) (12.0 * std::log2 (tempo)) : 0.0f);
+                        const bool shift = std::abs (semis) > 0.004f; const juce::int64 leadIn = shift ? (juce::int64) (sr * 0.02) : 0;
+                        const auto cs = tr.samplesAt (c.start) - leadIn, ce = tr.samplesAt (c.start + c.length) - leadIn;
                         const auto a = juce::jmax (cs, s), b = juce::jmin (ce, e);
                         if (a >= b) continue;
                         const float g = juce::Decibels::decibelsToGain (c.gainDb); const auto& d = *c.data; const int len2 = d.getNumSamples();
-                        const double ratio = c.fileRate / sr, base = c.offsetSec * c.fileRate;
+                        const double ratio = c.fileRate / sr * tempo, base = c.offsetSec * c.fileRate;
+                        auto& dst = shift ? pitched : buf; if (shift) { anyPitched = true; pitchedSemis = semis; }
                         const auto loopS = c.loopLen > 0 && c.loopLen < c.length ? tr.samplesAt (c.loopLen) : (juce::int64) 0;
                         const double fiS = (double) tr.samplesAt (c.fadeIn), foS = (double) tr.samplesAt (c.fadeOut), clipS = (double) (ce - cs);
                         for (auto t = a; t < b; ++t)
@@ -54,7 +68,7 @@ void TrackSource::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&
                             for (int ch = 0; ch < buf.getNumChannels(); ++ch)
                             {
                                 const auto* sp = d.getReadPointer (juce::jmin (ch, d.getNumChannels() - 1));
-                                buf.addSample (ch, off + (int) (t - s), (sp[i0] + (sp[i0 + 1] - sp[i0]) * fr) * env);
+                                dst.addSample (juce::jmin (ch, dst.getNumChannels() - 1), off + (int) (t - s), (sp[i0] + (sp[i0 + 1] - sp[i0]) * fr) * env);
                             }
                         }
                     }
@@ -69,8 +83,9 @@ void TrackSource::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&
                             {
                                 if (nt.start >= L || o + nt.start >= c.length) continue;
                                 const auto on = tr.samplesAt (c.start + o + nt.start), off2 = tr.samplesAt (c.start + juce::jmin (o + nt.start + nt.length, juce::jmin (o + L, c.length)));
-                                if (on >= s && on < e) noteOn (nt.pitch, nt.vel, off + (int) (on - s));
-                                if (off2 >= s && off2 < e) noteOff (nt.pitch, off + (int) (off2 - s));
+                                const int q = juce::jlimit (0, 127, nt.pitch + (drumKit.load() ? 0 : c.transpose + tp));
+                                if (on >= s && on < e) noteOn (q, nt.vel, off + (int) (on - s));
+                                if (off2 >= s && off2 < e) noteOff (q, off + (int) (off2 - s));
                             }
                     }
                     if (tr.looping.load() && ! tr.recording.load() && e == loopEndS) allOff (juce::jmax (0, off + len - 1));
@@ -80,12 +95,28 @@ void TrackSource::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&
     }
     else if (! sounding.empty()) allOff (0);
 
+    // pitched clips: run through the shifter (kept running ~1 s after the last pitched clip so its tail plays out)
+    if (anyPitched) pitchedHold = (int) (tr.sampleRate * 1.0);
+    if (isAudio && pitchedHold > 0)
+    {
+        PitchCore::Params pr; pr.tune = false; pr.shiftSemis = std::trunc (pitchedSemis); pr.detuneCents = (pitchedSemis - std::trunc (pitchedSemis)) * 100.0f;
+        const int nch = juce::jmin (2, buf.getNumChannels());
+        for (int ch = 0; ch < nch; ++ch)
+        {
+            auto* in = pitched.getReadPointer (ch); auto* out = buf.getWritePointer (ch);
+            for (int i = 0; i < n; ++i) out[i] += shifter[ch].process (in[i], pr);
+        }
+        pitchedHold -= n;
+    }
+
     // live MIDI (keyboard / controller) goes to the selected track, and is captured when recording
     if (liveTarget.load() && ! isAudio)
     {
         for (const auto m : engine.liveMidi)
         {
-            const auto msg = m.getMessage(); midi.addEvent (msg, m.samplePosition);
+            auto msg = m.getMessage();
+            if (tp != 0 && (msg.isNoteOn() || msg.isNoteOff())) { auto out = msg; out.setNoteNumber (juce::jlimit (0, 127, msg.getNoteNumber() + tp)); midi.addEvent (out, m.samplePosition); }   // sounds transposed, records as played
+            else midi.addEvent (msg, m.samplePosition);
             if (tr.recording.load() && armed.load() && (msg.isNoteOn() || msg.isNoteOff()))
             {
                 int s1, n1, s2, n2; recFifo.prepareToWrite (1, s1, n1, s2, n2);
@@ -218,6 +249,7 @@ juce::String Engine::setInstrument (Track& t, const juce::String& id, const juce
     if (state != nullptr) p->setStateInformation (state->getData(), (int) state->getSize());
     if (t.instrument.node) graph->removeNode (t.instrument.node.get());
     t.instrument = { makeNode (std::move (p)), id, desc ? *desc : juce::PluginDescription(), false };
+    t.src()->drumKit = id == "drums";
     rewire(); sendChangeMessage(); return {};
 }
 
@@ -402,6 +434,25 @@ void Engine::audioDeviceIOCallbackWithContext (const float* const* in, int numIn
     currentInput = in; currentNumInputs = numIn;
     player.audioDeviceIOCallbackWithContext (in, numIn, out, numOut, n, ctx);
     currentInput = nullptr;
+    {
+        const juce::SpinLock::ScopedTryLockType l (previewLock);
+        if (l.isLocked() && preview != nullptr)
+        {
+            auto& p = *preview; const int len = p.data.getNumSamples();
+            for (int i = 0; i < n; ++i)
+            {
+                const int i0 = (int) p.pos; const float fr = (float) (p.pos - i0);
+                for (int ch = 0; ch < juce::jmin (2, numOut); ++ch)
+                {
+                    const auto* d = p.data.getReadPointer (juce::jmin (ch, p.data.getNumChannels() - 1));
+                    float v = (d[i0] + (d[juce::jmin (i0 + 1, len - 1)] - d[i0]) * fr) * 0.8f;
+                    if (p.shift) v = p.core[ch].process (v, p.pr);
+                    if (out[ch] != nullptr) out[ch][i] += v;
+                }
+                p.pos += p.rate; if (p.pos >= p.end - 1) p.pos = 0;
+            }
+        }
+    }
 
     if (transport.playing.load())
     {
@@ -445,15 +496,15 @@ bool Engine::saveSession (const juce::File& f)
     {
         auto* e = root.createNewChildElement ("Track");
         e->setAttribute ("name", t->name); e->setAttribute ("audio", t->isAudio); e->setAttribute ("vol", t->volDb); e->setAttribute ("pan", t->pan);
-        e->setAttribute ("mute", t->mute); e->setAttribute ("solo", t->solo); e->setAttribute ("colour", t->colour.toString());
+        e->setAttribute ("mute", t->mute); e->setAttribute ("solo", t->solo); e->setAttribute ("colour", t->colour.toString()); e->setAttribute ("transpose", t->src()->transpose.load());
         if (t->instrument.node) writeSlot (*e, "Instrument", t->instrument);
         for (auto& s : t->inserts) writeSlot (*e, "Insert", s);
         const juce::ScopedLock sl (t->src()->lock);
         for (auto& c : t->src()->audioClips)
-        { auto* x = e->createNewChildElement ("AudioClip"); x->setAttribute ("file", c.file.getFullPathName()); x->setAttribute ("start", c.start); x->setAttribute ("length", c.length); x->setAttribute ("offset", c.offsetSec); x->setAttribute ("gain", c.gainDb); x->setAttribute ("fadeIn", c.fadeIn); x->setAttribute ("fadeOut", c.fadeOut); x->setAttribute ("loopLen", c.loopLen); }
+        { auto* x = e->createNewChildElement ("AudioClip"); x->setAttribute ("file", c.file.getFullPathName()); x->setAttribute ("start", c.start); x->setAttribute ("length", c.length); x->setAttribute ("offset", c.offsetSec); x->setAttribute ("gain", c.gainDb); x->setAttribute ("fadeIn", c.fadeIn); x->setAttribute ("fadeOut", c.fadeOut); x->setAttribute ("loopLen", c.loopLen); x->setAttribute ("pitch", c.pitch); x->setAttribute ("srcBpm", c.srcBpm); x->setAttribute ("name", c.name); }
         for (auto& c : t->src()->midiClips)
         {
-            auto* x = e->createNewChildElement ("MidiClip"); x->setAttribute ("name", c.name); x->setAttribute ("start", c.start); x->setAttribute ("length", c.length); x->setAttribute ("loopLen", c.loopLen);
+            auto* x = e->createNewChildElement ("MidiClip"); x->setAttribute ("name", c.name); x->setAttribute ("start", c.start); x->setAttribute ("length", c.length); x->setAttribute ("loopLen", c.loopLen); x->setAttribute ("transpose", c.transpose);
             for (auto& n : c.notes) { auto* ne = x->createNewChildElement ("N"); ne->setAttribute ("p", n.pitch); ne->setAttribute ("s", n.start); ne->setAttribute ("l", n.length); ne->setAttribute ("v", n.vel); }
         }
     }
@@ -483,7 +534,7 @@ bool Engine::loadSession (const juce::File& f)
     for (auto* e : root->getChildWithTagNameIterator ("Track"))
     {
         auto& t = addTrack (e->getBoolAttribute ("audio"), e->getStringAttribute ("name"));
-        t.volDb = (float) e->getDoubleAttribute ("vol", -6); t.pan = (float) e->getDoubleAttribute ("pan"); t.mute = e->getBoolAttribute ("mute"); t.solo = e->getBoolAttribute ("solo");
+        t.volDb = (float) e->getDoubleAttribute ("vol", -6); t.pan = (float) e->getDoubleAttribute ("pan"); t.mute = e->getBoolAttribute ("mute"); t.solo = e->getBoolAttribute ("solo"); t.src()->transpose = e->getIntAttribute ("transpose");
         t.colour = juce::Colour::fromString (e->getStringAttribute ("colour", "ffff2d87"));
         if (auto* ie = e->getChildByName ("Instrument")) loadSlot (ie, [&] (auto id, auto d, auto st) { return setInstrument (t, id, d, st); });
         for (auto* x : e->getChildWithTagNameIterator ("Insert"))
@@ -493,12 +544,13 @@ bool Engine::loadSession (const juce::File& f)
             juce::File af (x->getStringAttribute ("file"));
             if (addAudioFile (t, af, x->getDoubleAttribute ("start")))
             { const juce::ScopedLock sl (t.src()->lock); auto& c = t.src()->audioClips.back(); c.length = x->getDoubleAttribute ("length", c.length); c.offsetSec = x->getDoubleAttribute ("offset"); c.gainDb = (float) x->getDoubleAttribute ("gain");
-              c.fadeIn = x->getDoubleAttribute ("fadeIn"); c.fadeOut = x->getDoubleAttribute ("fadeOut"); c.loopLen = x->getDoubleAttribute ("loopLen"); }
+              c.fadeIn = x->getDoubleAttribute ("fadeIn"); c.fadeOut = x->getDoubleAttribute ("fadeOut"); c.loopLen = x->getDoubleAttribute ("loopLen");
+              c.pitch = (float) x->getDoubleAttribute ("pitch"); c.srcBpm = x->getDoubleAttribute ("srcBpm"); c.name = x->getStringAttribute ("name"); }
             else problems.add ("Missing audio: " + af.getFileName());
         }
         for (auto* x : e->getChildWithTagNameIterator ("MidiClip"))
         {
-            MidiClip c; c.name = x->getStringAttribute ("name", "MIDI"); c.start = x->getDoubleAttribute ("start"); c.length = x->getDoubleAttribute ("length", 4); c.loopLen = x->getDoubleAttribute ("loopLen");
+            MidiClip c; c.name = x->getStringAttribute ("name", "MIDI"); c.start = x->getDoubleAttribute ("start"); c.length = x->getDoubleAttribute ("length", 4); c.loopLen = x->getDoubleAttribute ("loopLen"); c.transpose = x->getIntAttribute ("transpose");
             for (auto* ne : x->getChildWithTagNameIterator ("N")) c.notes.push_back ({ ne->getIntAttribute ("p"), ne->getDoubleAttribute ("s"), ne->getDoubleAttribute ("l"), (float) ne->getDoubleAttribute ("v", 0.8) });
             const juce::ScopedLock sl (t.src()->lock); t.src()->midiClips.push_back (std::move (c));
         }
@@ -630,5 +682,80 @@ bool Engine::applyTemplate (const juce::var& t, juce::StringArray& problems)
     addFx (masterInserts, t["master"]["nfx"]);
     selected = 0; updateMix(); rewire(); sendChangeMessage();
     return true;
+}
+} // namespace rose
+
+namespace rose
+{
+const std::vector<LoopInfo>& loopLibrary()
+{
+    static std::vector<LoopInfo> lib; static bool loaded = false;
+    if (! loaded)
+    {
+        loaded = true;
+        const auto json = juce::JSON::parse (findResourceDir ("loops").getChildFile ("index.json"));
+        if (auto* a = json["loops"].getArray())
+            for (auto& L : *a)
+                lib.push_back ({ L["id"].toString(), L["name"].toString(), L["cat"].toString(), L["key"].isString() ? L["key"].toString() : juce::String(),
+                                 L["bpm"].isVoid() ? 0.0 : (double) L["bpm"], L["beats"].isVoid() ? 0.0 : (double) L["beats"] });
+    }
+    return lib;
+}
+juce::File loopFile (const LoopInfo& L) { return findResourceDir ("loops").getChildFile (L.id + ".mp3"); }
+int keyShift (const juce::String& from, const juce::String& to)
+{
+    static const juce::StringArray k { "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B" };
+    if (from.isEmpty() || to.isEmpty() || ! k.contains (from) || ! k.contains (to)) return 0;
+    int d = (k.indexOf (to) - k.indexOf (from) + 12) % 12; return d > 6 ? d - 12 : d;
+}
+
+int Engine::placeLoop (const LoopInfo& L, int trackIndex, double beat, int semis)
+{
+    const auto f = loopFile (L); if (! f.existsAsFile()) return -1;
+    beat = std::round (beat * 4) / 4;
+    const double len = L.bpm > 0 && L.beats > 0 ? L.beats : 0;
+    Track* t = juce::isPositiveAndBelow (trackIndex, (int) tracks.size()) && tracks[(size_t) trackIndex]->isAudio ? tracks[(size_t) trackIndex].get() : nullptr;
+    if (t != nullptr && len > 0)
+    {
+        const juce::ScopedLock sl (t->src()->lock);
+        for (auto& c : t->src()->audioClips) if (c.start < beat + len - 1e-6 && c.start + c.length > beat + 1e-6) { t = nullptr; break; }   // never stack clips
+    }
+    if (t == nullptr)
+    {
+        auto& nt = addTrack (true, (L.cat == "Drums" || L.cat == "Percussion" ? L.name.upToFirstOccurrenceOf (juce::String::fromUTF8 (" \xc2\xb7"), false, false) : L.name).substring (0, 24));
+        t = &nt; trackIndex = (int) tracks.size() - 1;
+    }
+    else for (int i = 0; i < (int) tracks.size(); ++i) if (tracks[(size_t) i].get() == t) trackIndex = i;
+    if (! addAudioFile (*t, f, beat)) return -1;
+    {
+        const juce::ScopedLock sl (t->src()->lock); auto& c = t->src()->audioClips.back();
+        c.name = L.name; c.pitch = (float) semis;
+        if (len > 0) { c.srcBpm = L.bpm; c.length = len; c.loopLen = len; }
+    }
+    sendChangeMessage(); return trackIndex;
+}
+} // namespace rose
+
+namespace rose
+{
+void Engine::previewLoop (const LoopInfo* L, int semis)
+{
+    std::unique_ptr<Preview> next;
+    if (L != nullptr)
+    {
+        std::unique_ptr<juce::AudioFormatReader> r (audioFormats.createReaderFor (loopFile (*L)));
+        if (r != nullptr)
+        {
+            next = std::make_unique<Preview>(); next->id = L->id;
+            next->data.setSize ((int) juce::jmin (2u, r->numChannels), (int) r->lengthInSamples); r->read (&next->data, 0, (int) r->lengthInSamples, 0, true, true);
+            const double tempo = L->bpm > 0 ? transport.bpm.load() / L->bpm : 1.0, sr = transport.sampleRate;
+            next->rate = r->sampleRate / sr * tempo;
+            next->end = L->bpm > 0 && L->beats > 0 ? juce::jmin ((double) r->lengthInSamples, L->beats * 60.0 / L->bpm * r->sampleRate) : (double) r->lengthInSamples;
+            const float s = (float) semis - (float) (12.0 * std::log2 (tempo));
+            next->shift = std::abs (s) > 0.004f; next->pr.tune = false; next->pr.shiftSemis = std::trunc (s); next->pr.detuneCents = (s - std::trunc (s)) * 100.0f;
+            for (auto& c : next->core) c.prepare (sr);
+        }
+    }
+    const juce::SpinLock::ScopedLockType l (previewLock); std::swap (preview, next);
 }
 } // namespace rose

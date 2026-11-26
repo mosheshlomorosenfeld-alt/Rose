@@ -122,7 +122,10 @@ void Timeline::paint (juce::Graphics& g)
         for (int ci = 0; ci < (int) s->audioClips.size(); ++ci)
         {
             auto& c = s->audioClips[(size_t) ci];
-            auto r = box (c.start, c.length, sel.track == ti && sel.clip == ci && sel.audio, c.file.getFileNameWithoutExtension());
+            juce::String nm = c.name.isNotEmpty() ? c.name : c.file.getFileNameWithoutExtension();
+            if (std::abs (c.pitch) > 0.004f) nm << "  " << (c.pitch > 0 ? "+" : "") << juce::String (c.pitch, std::abs (c.pitch - std::round (c.pitch)) > 0.004f ? 2 : 0) << " st";
+            if (c.srcBpm > 0) nm << juce::String::fromUTF8 ("  \xe2\x9f\xb2");
+            auto r = box (c.start, c.length, sel.track == ti && sel.clip == ci && sel.audio, nm);
             auto& pk = peaksFor (c); if (pk.empty()) continue;
             g.setColour (t.colour); const float mid = r.getCentreY() + 6, amp = (r.getHeight() - 18) / 2;
             const double L = c.loopLen > 0 && c.loopLen < c.length ? c.loopLen : c.length;
@@ -130,7 +133,7 @@ void Timeline::paint (juce::Graphics& g)
             {
                 const double within = std::fmod (x / ppb, L);
                 if (L < c.length && within < 1.0 / ppb) { g.setColour (col::ink.withAlpha (0.5f)); g.drawVerticalLine ((int) r.getX() + x, r.getY(), r.getBottom()); g.setColour (t.colour); }
-                const double sec = c.offsetSec + within * 60.0 / tr.bpm.load(); const size_t i = (size_t) (sec * c.fileRate / 256);
+                const double sec = c.offsetSec + within * 60.0 / (c.srcBpm > 0 ? c.srcBpm : tr.bpm.load()); const size_t i = (size_t) (sec * c.fileRate / 256);
                 if (i >= pk.size()) continue;
                 const float a = pk[i] * amp * juce::Decibels::decibelsToGain (c.gainDb);
                 g.drawVerticalLine ((int) r.getX() + x, mid - a, mid + a + 1);
@@ -144,7 +147,7 @@ void Timeline::paint (juce::Graphics& g)
         for (int ci = 0; ci < (int) s->midiClips.size(); ++ci)
         {
             auto& c = s->midiClips[(size_t) ci];
-            auto r = box (c.start, c.length, sel.track == ti && sel.clip == ci && ! sel.audio, c.name);
+            auto r = box (c.start, c.length, sel.track == ti && sel.clip == ci && ! sel.audio, c.transpose && ! s->drumKit.load() ? c.name + "  " + (c.transpose > 0 ? "+" : "") + juce::String (c.transpose) + " st" : c.name);
             if (c.notes.empty()) continue;
             int lo = 127, hi = 0; for (auto& n : c.notes) { lo = juce::jmin (lo, n.pitch); hi = juce::jmax (hi, n.pitch); }
             const float rh = juce::jlimit (2.0f, 5.0f, (r.getHeight() - 16) / (float) (hi - lo + 1)); g.setColour (t.colour);
@@ -159,6 +162,38 @@ void Timeline::paint (juce::Graphics& g)
             g.setColour (col::rose); g.fillRect (r.getRight() - 8, r.getBottom() - 8, 8.0f, 8.0f);
         }
     }
+    if (dropTrack >= -1)   // where a dragged loop / effect will land
+    {
+        const int n = (int) engine.tracks.size(), lane = juce::jlimit (0, n, dropTrack); g.setColour (col::rose);
+        if (dropIsLoop) { const float x = (float) dropBeat * ppb; g.drawRect (juce::Rectangle<float> (x, (float) (RULER + lane * LANE + 4), 4 * ppb, (float) LANE - 8), 2.0f); }
+        else if (lane < n) g.drawRect (juce::Rectangle<int> (0, RULER + lane * LANE, getWidth(), LANE), 2);
+    }
+}
+void Timeline::itemDropped (const SourceDetails& d)
+{
+    const auto desc = d.description.toString(); const int ti = (d.localPosition.y - RULER) / LANE; dropTrack = -2;
+    if (desc.startsWith ("fx:")) { if (juce::isPositiveAndBelow (ti, (int) engine.tracks.size())) { addFxTo (engine, engine.tracks[(size_t) ti]->inserts, desc.fromFirstOccurrenceOf ("fx:", false, false)); engine.selectTrack (ti); if (notify) notify ("Added to " + engine.tracks[(size_t) ti]->name); } }
+    else if (auto* L = findLoop (desc.fromFirstOccurrenceOf ("loop:", false, false)))
+    {
+        engine.previewLoop (nullptr);
+        const int used = engine.placeLoop (*L, ti, juce::jmax (0.0, std::floor ((double) d.localPosition.x / ppb / 4) * 4), loopSemis ? loopSemis (*L) : 0);
+        if (used >= 0) { engine.selectTrack (used); if (notify) notify (L->name + (L->bpm > 0 ? " - follows the song tempo" : "")); }
+    }
+    updateSize(); repaint(); if (changed) changed();
+}
+void Timeline::pitchSelected (int semis)
+{
+    if (! juce::isPositiveAndBelow (sel.track, (int) engine.tracks.size())) return;
+    auto* s = engine.tracks[(size_t) sel.track]->src(); const juce::ScopedLock sl (s->lock); float now = 0;
+    if (sel.audio && juce::isPositiveAndBelow (sel.clip, (int) s->audioClips.size())) { auto& c = s->audioClips[(size_t) sel.clip]; c.pitch = semis == 0 ? 0.0f : juce::jlimit (-48.0f, 48.0f, c.pitch + (float) semis); now = c.pitch; }
+    else if (! sel.audio && juce::isPositiveAndBelow (sel.clip, (int) s->midiClips.size()))
+    {
+        if (s->drumKit.load()) { if (notify) notify ("Drum kits don't transpose - each note is a different drum"); return; }
+        auto& c = s->midiClips[(size_t) sel.clip]; c.transpose = semis == 0 ? 0 : juce::jlimit (-48, 48, c.transpose + semis); now = (float) c.transpose;
+    }
+    else return;
+    if (notify) notify ("Clip pitch " + juce::String (now > 0 ? "+" : "") + juce::String (now, 0) + " st");
+    repaint();
 }
 void Timeline::mouseDown (const juce::MouseEvent& e)
 {
@@ -190,6 +225,8 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
             m.addItem (14, looped ? "Loop clip: turn off" : "Loop clip"); m.addItem (15, "Set loop region to clip\tCmd+L");
             if (sel.audio) { m.addSeparator(); m.addItem (16, "Fade in (1/4 beat)"); m.addItem (17, "Fade out (1 beat)"); m.addItem (18, "Remove fades"); }
             if (! sel.audio) m.addItem (4, "Edit notes...");
+            { juce::PopupMenu p; p.addItem (20, "Up a semitone\tAlt+Up"); p.addItem (21, "Down a semitone\tAlt+Down"); p.addItem (22, "Up an octave\tAlt+Shift+Up"); p.addItem (23, "Down an octave\tAlt+Shift+Down"); p.addItem (24, "Reset pitch");
+              m.addSubMenu ("Pitch", p); }
             m.addSeparator(); m.addItem (3, "Delete\tDel");
             m.showMenuAsync ({}, [this, here] (int r)
             {
@@ -197,7 +234,8 @@ void Timeline::mouseDown (const juce::MouseEvent& e)
                     case 4: if (openPianoRoll) openPianoRoll (sel.track, sel.clip); break;
                     case 10: copySelected (true); break; case 11: copySelected (false); break; case 12: paste(); break; case 13: splitAt (here); break;
                     case 14: toggleClipLoop(); break; case 15: loopToSelection(); break; case 16: setFade (true, 0.25); break; case 17: setFade (false, 1.0); break;
-                    case 18: setFade (true, 0); setFade (false, 0); break; default: break; }
+                    case 18: setFade (true, 0); setFade (false, 0); break;
+                    case 20: pitchSelected (1); break; case 21: pitchSelected (-1); break; case 22: pitchSelected (12); break; case 23: pitchSelected (-12); break; case 24: pitchSelected (0); break; default: break; }
             });
             repaint(); return;
         }
@@ -361,6 +399,7 @@ void Timeline::setFade (bool in, double beats)
 TrackHeader::TrackHeader (Engine& e, int idx) : index (idx), engine (e)
 {
     auto& t = *engine.tracks[(size_t) idx];
+    name.addMouseListener (this, false);   // right-click the name for the transpose menu
     name.setText (t.name, juce::dontSendNotification); name.setEditable (false, true); name.setFont (juce::FontOptions (14.0f, juce::Font::bold));
     name.onTextChange = [this] { engine.tracks[(size_t) index]->name = name.getText(); };
     for (auto* b : { &m, &s, &r, &i }) { b->setClickingTogglesState (true); addAndMakeVisible (b); }
@@ -395,7 +434,28 @@ void TrackHeader::paint (juce::Graphics& g)
     const float pk = t.str()->peak.load(), db = juce::Decibels::gainToDecibels (pk, -60.0f), f = juce::jlimit (0.0f, 1.0f, (db + 60) / 66);
     g.setColour (db > -1 ? juce::Colours::red : db > -9 ? juce::Colours::orange : juce::Colour (0xff22c55e)); g.fillRect (getWidth() - 8, (int) (getHeight() * (1 - f)), 4, (int) (getHeight() * f));
     g.setColour (col::mute); g.setFont (11.0f);
-    g.drawText (t.isAudio ? "Audio" : (t.instrument.node ? t.instrument.displayName() : "No instrument"), 10, getHeight() - 18, getWidth() - 20, 14, juce::Justification::left);
+    juce::String sub = t.isAudio ? "Audio" : (t.instrument.node ? t.instrument.displayName() : "No instrument");
+    if (const int tp = t.src()->transpose.load(); tp != 0 && ! t.src()->drumKit.load()) sub << "   " << (tp > 0 ? "+" : "") << tp << " st";
+    g.drawText (sub, 10, getHeight() - 18, getWidth() - 20, 14, juce::Justification::left);
+    if (hover) { g.setColour (col::rose); g.drawRect (getLocalBounds(), 2); }
+}
+void TrackHeader::mouseDown (const juce::MouseEvent& e)
+{
+    if (e.eventComponent != this && ! e.mods.isPopupMenu()) return;   // buttons/sliders handle their own clicks
+    engine.selectTrack (index);
+    if (! e.mods.isPopupMenu()) return;
+    auto* s = engine.tracks[(size_t) index]->src(); const int tp = s->transpose.load(); const bool drums = s->drumKit.load();
+    juce::PopupMenu m; m.addSectionHeader ("Transpose track" + juce::String (tp ? juce::String (" (now ") + (tp > 0 ? "+" : "") + juce::String (tp) + ")" : juce::String()));
+    m.addItem (1, "Up a semitone", ! drums); m.addItem (2, "Down a semitone", ! drums); m.addItem (3, "Up an octave", ! drums); m.addItem (4, "Down an octave", ! drums); m.addItem (5, "Reset", tp != 0);
+    if (drums) m.addItem (-1, "Drum kits don't transpose (each note is a different drum)", false);
+    m.showMenuAsync ({}, [this, s] (int r) { static const int d[] { 0, 1, -1, 12, -12 }; if (r >= 1 && r <= 4) s->transpose = juce::jlimit (-36, 36, s->transpose.load() + d[r]); else if (r == 5) s->transpose = 0; else return; repaint(); if (changed) changed(); });
+}
+void TrackHeader::itemDropped (const SourceDetails& d)
+{
+    hover = false; repaint(); const auto desc = d.description.toString();
+    if (desc.startsWith ("fx:")) addFxTo (engine, engine.tracks[(size_t) index]->inserts, desc.fromFirstOccurrenceOf ("fx:", false, false));
+    else if (auto* L = findLoop (desc.fromFirstOccurrenceOf ("loop:", false, false))) { engine.previewLoop (nullptr); engine.placeLoop (*L, index, playhead ? playhead() : 0, loopSemis ? loopSemis (*L) : 0); }
+    engine.selectTrack (index); if (changed) changed();
 }
 void TrackHeader::resized()
 {
@@ -505,7 +565,7 @@ void DevicePanel::instrumentMenu()
 MainComponent::MainComponent()
 {
     setLookAndFeel (&look);
-    for (auto* b : { &bHome, &bPlay, &bStop, &bRec, &bLoop, &bClick, &bAddAudio, &bAddInst, &bMaster, &bPlugins, &bAudio, &bOpen, &bSave, &bBounce, &bAbout, &bTemplates }) addAndMakeVisible (b);
+    for (auto* b : { &bHome, &bPlay, &bStop, &bRec, &bLoop, &bClick, &bAddAudio, &bAddInst, &bMaster, &bPlugins, &bAudio, &bAbout, &bFile }) addAndMakeVisible (b);
     for (auto* b : { &bPointer, &bScissors }) { addAndMakeVisible (b); b->setClickingTogglesState (true); b->setRadioGroupId (77); }
     bPointer.setToggleState (true, juce::dontSendNotification);
     bPointer.setTooltip ("Pointer (1): move, resize, fade and loop clips"); bScissors.setTooltip ("Scissors (3): click a clip to split it - or Alt-click with any tool");
@@ -538,6 +598,13 @@ MainComponent::MainComponent()
     bMaster.onClick = [this] { devices.showMaster = bMaster.getToggleState(); devices.refresh(); };
     bPlugins.onClick = [this] { showScanner(); }; bAudio.onClick = [this] { showAudioSettings(); };
     bSave.onClick = [this] { save(); }; bOpen.onClick = [this] { open(); }; bBounce.onClick = [this] { bounce(); };
+    bFile.setTooltip ("Templates, open, save and bounce");
+    bFile.onClick = [this]
+    {
+        juce::PopupMenu m; m.addItem (1, "New from template..."); m.addSeparator();
+        m.addItem (2, "Open session...\tCmd+O"); m.addItem (3, "Save session\tCmd+S"); m.addSeparator(); m.addItem (4, "Bounce to WAV...");
+        m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&bFile), [this] (int r) { if (r == 1) templatesMenu(); else if (r == 2) open(); else if (r == 3) save(); else if (r == 4) bounce(); });
+    };
 
     bpm.setSliderStyle (juce::Slider::IncDecButtons); bpm.setRange (40, 240, 1); bpm.setDoubleClickReturnValue (true, 120); bpm.setValue (engine.transport.bpm.load(), juce::dontSendNotification);
     bpm.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 46, 26);
@@ -558,7 +625,15 @@ MainComponent::MainComponent()
         struct Closer { static void install (juce::DocumentWindow* win, std::unique_ptr<juce::DocumentWindow>& slot) { slot.reset (win); } };
         Closer::install (w, pianoRollWindow);
     };
-    timeline.changed = [this] { repaint(); };
+    timeline.changed = [this] { repaint(); for (auto* h : headers) h->repaint(); devices.refresh(); };
+    // Browser: loops and effects to drag anywhere
+    addAndMakeVisible (browser); addAndMakeVisible (bBrowser); bBrowser.setClickingTogglesState (true); bBrowser.setToggleState (true, juce::dontSendNotification);
+    bBrowser.setTooltip ("Show the loop and effect browser");
+    bBrowser.onClick = [this] { showBrowser = bBrowser.getToggleState(); if (! showBrowser) engine.previewLoop (nullptr); resized(); };
+    browser.selectedTrack = [this] { return engine.selected; };
+    browser.playhead = [this] { return engine.transport.beatsAt (engine.transport.pos.load()); };
+    browser.changed = [this] { timeline.updateSize(); timeline.repaint(); devices.refresh(); };
+    timeline.loopSemis = [this] (const LoopInfo& L) { return browser.keySemis (L); };
     devices.openEditor = [this] (juce::AudioProcessor& p) { openEditor (p); };
     keys.setAvailableRange (24, 108); keys.setLowestVisibleKey (48);
     engine.addChangeListener (this);
@@ -584,15 +659,21 @@ void MainComponent::paint (juce::Graphics& g)
 void MainComponent::resized()
 {
     auto r = getLocalBounds(); auto top = r.removeFromTop (48).reduced (8, 8); top.removeFromLeft (70);
-    for (auto* b : { &bHome, &bPlay, &bStop, &bRec, &bLoop, &bClick }) { b->setBounds (top.removeFromLeft (b == &bHome ? 36 : 54)); top.removeFromLeft (4); }
+    for (auto* b : { &bHome, &bPlay, &bStop, &bRec, &bLoop, &bClick }) { b->setBounds (top.removeFromLeft (b == &bHome ? 36 : 50)); top.removeFromLeft (4); }
     top.removeFromLeft (6); bPointer.setBounds (top.removeFromLeft (62)); top.removeFromLeft (2); bScissors.setBounds (top.removeFromLeft (70)); top.removeFromLeft (8);
-    time.setBounds (top.removeFromLeft (120)); top.removeFromLeft (8);
+    time.setBounds (top.removeFromLeft (104)); top.removeFromLeft (8);
     bpmLabel.setBounds (top.removeFromLeft (36)); bpm.setBounds (top.removeFromLeft (110)); top.removeFromLeft (10);
+    bBrowser.setBounds (top.removeFromLeft (72)); top.removeFromLeft (6);
     bAbout.setBounds (top.removeFromRight (32)); top.removeFromRight (4);
     if (bUpdate.isVisible()) { bUpdate.setBounds (top.removeFromRight (150)); top.removeFromRight (4); }
-    for (auto* b : { &bBounce, &bSave, &bOpen, &bTemplates, &bAudio, &bPlugins, &bMaster, &bAddInst, &bAddAudio }) { b->setBounds (top.removeFromRight (b == &bAddInst ? 104 : b == &bAudio ? 100 : 82)); top.removeFromRight (4); }
+    {   // right-hand buttons share what's left, shrinking together on small windows
+        juce::Button* rb[] { &bFile, &bAudio, &bPlugins, &bMaster, &bAddInst, &bAddAudio }; const int want[] { 64, 100, 82, 76, 104, 82 };
+        int total = 0; for (int w : want) total += w + 4; const float k = juce::jmin (1.0f, (float) top.getWidth() / (float) total);
+        for (int i = 0; i < 6; ++i) { rb[i]->setBounds (top.removeFromRight (juce::roundToInt (want[i] * k))); top.removeFromRight (4); }
+    }
     keys.setBounds (r.removeFromBottom (64));
     devices.setBounds (r.removeFromBottom (170));
+    browser.setVisible (showBrowser); if (showBrowser) browser.setBounds (r.removeFromLeft (250));
     headerHolder.setBounds (r.removeFromLeft (240));
     viewport.setBounds (r);
     for (auto* h : headers) h->setBounds (0, Timeline::RULER + h->index * Timeline::LANE - viewport.getViewPositionY(), 240, Timeline::LANE);
@@ -600,7 +681,13 @@ void MainComponent::resized()
 void MainComponent::rebuildHeaders()
 {
     headers.clear();
-    for (int i = 0; i < (int) engine.tracks.size(); ++i) { auto* h = headers.add (new TrackHeader (engine, i)); headerHolder.addAndMakeVisible (h); }
+    for (int i = 0; i < (int) engine.tracks.size(); ++i)
+    {
+        auto* h = headers.add (new TrackHeader (engine, i)); headerHolder.addAndMakeVisible (h);
+        h->changed = [this] { timeline.updateSize(); timeline.repaint(); devices.refresh(); };
+        h->playhead = [this] { return engine.transport.beatsAt (engine.transport.pos.load()); };
+        h->loopSemis = [this] (const LoopInfo& L) { return browser.keySemis (L); };
+    }
     lastTrackCount = (int) engine.tracks.size(); resized();
 }
 void MainComponent::changeListenerCallback (juce::ChangeBroadcaster*)
@@ -636,6 +723,8 @@ void MainComponent::timerCallback()
 bool MainComponent::keyPressed (const juce::KeyPress& k)
 {
     if (k == juce::KeyPress::spaceKey) { bPlay.triggerClick(); return true; }
+    if ((k.getKeyCode() == juce::KeyPress::upKey || k.getKeyCode() == juce::KeyPress::downKey) && k.getModifiers().isAltDown())
+    { timeline.pitchSelected ((k.getKeyCode() == juce::KeyPress::upKey ? 1 : -1) * (k.getModifiers().isShiftDown() ? 12 : 1)); return true; }
     if (k == juce::KeyPress::deleteKey || k == juce::KeyPress::backspaceKey) { timeline.deleteSelected(); return true; }
     if (k == juce::KeyPress ('d', juce::ModifierKeys::commandModifier, 0)) { timeline.duplicateSelected(); return true; }
     if (k == juce::KeyPress ('e', juce::ModifierKeys::commandModifier, 0)) { timeline.splitSelected(); return true; }
@@ -740,7 +829,7 @@ void MainComponent::templatesMenu()
     auto* list = json["templates"].getArray(); if (list == nullptr) return;
     juce::PopupMenu m; m.addSectionHeader ("New session from a template");
     for (int i = 0; i < list->size(); ++i) m.addItem (i + 1, (*list)[i]["name"].toString() + "   -   " + (*list)[i]["desc"].toString());
-    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&bTemplates), [this, json] (int r)
+    m.showMenuAsync (juce::PopupMenu::Options().withTargetComponent (&bFile), [this, json] (int r)
     {
         if (r <= 0) return;
         auto tpl = (*json["templates"].getArray())[r - 1];
