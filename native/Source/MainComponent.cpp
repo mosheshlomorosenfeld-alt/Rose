@@ -384,7 +384,10 @@ void DevicePanel::instrumentMenu()
 MainComponent::MainComponent()
 {
     setLookAndFeel (&look);
-    for (auto* b : { &bHome, &bPlay, &bStop, &bRec, &bLoop, &bClick, &bAddAudio, &bAddInst, &bMaster, &bPlugins, &bAudio, &bOpen, &bSave, &bBounce }) addAndMakeVisible (b);
+    for (auto* b : { &bHome, &bPlay, &bStop, &bRec, &bLoop, &bClick, &bAddAudio, &bAddInst, &bMaster, &bPlugins, &bAudio, &bOpen, &bSave, &bBounce, &bAbout }) addAndMakeVisible (b);
+    bAbout.setTooltip ("About Rose Studio");
+    bAbout.onClick = [] { juce::AlertWindow::showMessageBoxAsync (juce::MessageBoxIconType::InfoIcon, "Rose Studio " + juce::String (ProjectInfo::versionString),
+        "by Rosenfeld Productions\n\nHosts VST3" + juce::String ((juce::SystemStats::getOperatingSystemType() & juce::SystemStats::MacOSX) != 0 ? " and Audio Unit" : "") + " plugins, 13 built-in effects, Rose Synth, recording, piano roll, sessions and offline bounce.\n\nShortcuts: Space play, R record, Cmd+D duplicate, Cmd+E split, Cmd+S save, Delete remove clip.\nDouble-click a fader or knob to reset it."); };
     bLoop.setClickingTogglesState (true); bClick.setClickingTogglesState (true); bMaster.setClickingTogglesState (true);
     bLoop.setToggleState (true, juce::dontSendNotification); bRec.setColour (juce::TextButton::buttonOnColourId, juce::Colour (0xffe11d48));
     bHome.onClick = [this] { engine.toStart(); };
@@ -400,7 +403,7 @@ MainComponent::MainComponent()
     bPlugins.onClick = [this] { showScanner(); }; bAudio.onClick = [this] { showAudioSettings(); };
     bSave.onClick = [this] { save(); }; bOpen.onClick = [this] { open(); }; bBounce.onClick = [this] { bounce(); };
 
-    bpm.setSliderStyle (juce::Slider::IncDecButtons); bpm.setRange (40, 240, 1); bpm.setValue (engine.transport.bpm.load(), juce::dontSendNotification);
+    bpm.setSliderStyle (juce::Slider::IncDecButtons); bpm.setRange (40, 240, 1); bpm.setDoubleClickReturnValue (true, 120); bpm.setValue (engine.transport.bpm.load(), juce::dontSendNotification);
     bpm.setTextBoxStyle (juce::Slider::TextBoxLeft, false, 46, 26);
     bpm.onValueChange = [this] { engine.transport.bpm = bpm.getValue(); timeline.updateSize(); timeline.repaint(); };
     time.setFont (juce::FontOptions (20.0f, juce::Font::bold)); time.setColour (juce::Label::backgroundColourId, juce::Colours::black); time.setColour (juce::Label::textColourId, juce::Colour (0xffffd6e5)); time.setJustificationType (juce::Justification::centred);
@@ -443,6 +446,7 @@ void MainComponent::resized()
     for (auto* b : { &bHome, &bPlay, &bStop, &bRec, &bLoop, &bClick }) { b->setBounds (top.removeFromLeft (b == &bHome ? 36 : 54)); top.removeFromLeft (4); }
     top.removeFromLeft (6); time.setBounds (top.removeFromLeft (120)); top.removeFromLeft (8);
     bpmLabel.setBounds (top.removeFromLeft (36)); bpm.setBounds (top.removeFromLeft (110)); top.removeFromLeft (10);
+    bAbout.setBounds (top.removeFromRight (32)); top.removeFromRight (4);
     for (auto* b : { &bBounce, &bSave, &bOpen, &bAudio, &bPlugins, &bMaster, &bAddInst, &bAddAudio }) { b->setBounds (top.removeFromRight (b == &bAddInst ? 104 : b == &bAudio ? 100 : 82)); top.removeFromRight (4); }
     keys.setBounds (r.removeFromBottom (64));
     devices.setBounds (r.removeFromBottom (170));

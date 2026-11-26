@@ -153,7 +153,7 @@ private:
     Engine engine;
     juce::TextButton bHome { "|<" }, bPlay { "Play" }, bStop { "Stop" }, bRec { "Rec" }, bLoop { "Loop" }, bClick { "Click" },
                      bAddAudio { "+ Audio" }, bAddInst { "+ Instrument" }, bMaster { "Master FX" }, bPlugins { "Plugins..." }, bAudio { "Audio/MIDI..." },
-                     bOpen { "Open" }, bSave { "Save" }, bBounce { "Bounce WAV" };
+                     bOpen { "Open" }, bSave { "Save" }, bBounce { "Bounce WAV" }, bAbout { "?" };
     juce::Slider bpm; juce::Label time, bpmLabel { {}, "BPM" };
     juce::Component headerHolder; juce::OwnedArray<TrackHeader> headers;
     struct SyncViewport : juce::Viewport { std::function<void()> moved; void visibleAreaChanged (const juce::Rectangle<int>&) override { if (moved) moved(); } } viewport;

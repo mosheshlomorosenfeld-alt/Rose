@@ -245,3 +245,9 @@ body.session .ruler{cursor:default}
 .ch{gap:3px;padding:5px 4px}
 .ch .snd{gap:1px 4px}
 .rack>.dev,.rack>.addfx{flex:none}
+.valedit{width:100%;height:22px;border:1px solid var(--rose);border-radius:5px;background:var(--panel);color:var(--ink);font:inherit;text-align:right;padding:0 4px}
+.lcd .valedit{width:88px;font:700 16px 'Space Grotesk',monospace;text-align:right;background:transparent;color:var(--lcdink)}
+.lcd{cursor:text}.th .cs{cursor:pointer}
+.brand{border:0;background:transparent;cursor:pointer;padding:0}
+.help .card ol{color:var(--ink)}.help .card p{line-height:1.55}
+.help .card a.tb{text-decoration:none;margin:4px 6px 4px 0}

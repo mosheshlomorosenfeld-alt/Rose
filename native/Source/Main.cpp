@@ -4,7 +4,7 @@
 class RoseApp : public juce::JUCEApplication
 {
 public:
-    const juce::String getApplicationName() override { return "Rose"; }
+    const juce::String getApplicationName() override { return "Rose Studio"; }
     const juce::String getApplicationVersion() override { return ProjectInfo::versionString; }
     bool moreThanOneInstanceAllowed() override { return false; }
     void initialise (const juce::String&) override { window = std::make_unique<Window>(); }
@@ -13,7 +13,7 @@ public:
 
     struct Window : juce::DocumentWindow
     {
-        Window() : DocumentWindow ("Rose", juce::Colour (0xff121014), DocumentWindow::allButtons)
+        Window() : DocumentWindow ("Rose Studio", juce::Colour (0xff121014), DocumentWindow::allButtons)
         {
             setUsingNativeTitleBar (true); setContentOwned (new rose::MainComponent(), true);
             setResizable (true, true); setResizeLimits (900, 600, 10000, 10000); centreWithSize (getWidth(), getHeight()); setVisible (true);

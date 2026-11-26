@@ -13,7 +13,8 @@ else()
 endif()
 
 juce_add_gui_app(Rose
-    PRODUCT_NAME "Rose"
+    PRODUCT_NAME "Rose Studio"
+    ICON_BIG "${CMAKE_CURRENT_SOURCE_DIR}/Resources/icon.png"
     COMPANY_NAME "Rosenfeld Productions"
     BUNDLE_ID com.rosenfeldproductions.rose
     MICROPHONE_PERMISSION_ENABLED TRUE
@@ -30,6 +31,13 @@ target_compile_definitions(Rose PRIVATE
     JUCE_USE_CURL=0
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:Rose,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:Rose,JUCE_VERSION>")
+
+if(APPLE)
+    target_link_libraries(Rose PRIVATE "-framework CoreAudioKit" "-framework AudioUnit")
+endif()
+if(MSVC)
+    target_compile_options(Rose PRIVATE /bigobj)
+endif()
 
 target_link_libraries(Rose PRIVATE
     juce::juce_audio_utils juce::juce_audio_processors juce::juce_dsp

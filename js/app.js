@@ -145,7 +145,7 @@ function renderHeads() {
     <div class="cs"></div><div class="body">
       <div class="row"><input class="name" value="${esc(t.name)}" aria-label="Track name"><button class="sm" data-act="menu" title="Track options" aria-label="Track options">⋯</button></div>
       <div class="row"><button class="sm m ${t.mute ? 'on' : ''}" data-act="mute" title="Mute">M</button><button class="sm s ${t.solo ? 'on' : ''}" data-act="solo" title="Solo">S</button>${grp ? '' : `<button class="sm a ${t.arm ? 'on' : ''}" data-act="arm" title="Arm for recording">●</button>`}<button class="sm au ${t.autoShow ? 'on' : ''} ${t.auto?.some(a => a.points.length) ? 'has' : ''}" data-act="auto" title="Show automation (draw volume, pan and effect changes over time)">A</button>
-      <input class="vol" type="range" min="-60" max="6" step="0.5" value="${t.vol}" aria-label="Volume" title="${t.vol} dB"></div>
+      <input class="vol" type="range" min="-60" max="6" step="0.5" value="${t.vol}" data-def="0" aria-label="Volume" title="${t.vol} dB"></div>
       ${autoSel || `<div class="kind">${kind}${t.inserts.length ? ' · ' + t.inserts.length + ' fx' : ''}${outTo}</div>`}</div></div>`;
   }).join('');
 }
@@ -420,7 +420,7 @@ function bindClipBar(fc, rerender) {
 function renderPianoRoll(fc, box) {
   const grids = { '1/4': 1, '1/8': 0.5, '1/16': 0.25, '1/32': 0.125 };
   box.innerHTML = clipBar(fc, `<select id="prGrid" aria-label="Grid">${Object.entries(grids).map(([k, v]) => `<option value="${v}" ${v === UI.prGrid ? 'selected' : ''}>Grid ${k}</option>`).join('')}</select>
-    <button id="prQ">Quantize</button><select id="prSw" aria-label="Swing" title="Swing applied by Quantize"><option value="0">Straight</option><option value="0.1">Swing 10%</option><option value="0.2">Swing 20%</option><option value="0.33">Swing 33%</option><option value="0.5">Swing 50%</option></select><button id="prHum" title="Cubase-style humanize: tiny random timing and velocity changes">Humanize</button><button id="prLeg" title="Stretch each note to the next one">Legato</button><button id="prVel" title="Velocity: louder (+) / Shift-click softer">Vel ±</button><button id="prUp">Oct +</button><button id="prDn">Oct −</button><label>Zoom <input id="prZ" type="range" min="0.5" max="3" step="0.1" value="${UI.prZoom}" style="width:90px;padding:0"></label>`) +
+    <button id="prQ">Quantize</button><select id="prSw" aria-label="Swing" title="Swing applied by Quantize"><option value="0">Straight</option><option value="0.1">Swing 10%</option><option value="0.2">Swing 20%</option><option value="0.33">Swing 33%</option><option value="0.5">Swing 50%</option></select><button id="prHum" title="Cubase-style humanize: tiny random timing and velocity changes">Humanize</button><button id="prLeg" title="Stretch each note to the next one">Legato</button><button id="prVel" title="Velocity: louder (+) / Shift-click softer">Vel ±</button><button id="prUp">Oct +</button><button id="prDn">Oct −</button><label>Zoom <input id="prZ" data-def="1" type="range" min="0.5" max="3" step="0.1" value="${UI.prZoom}" style="width:90px;padding:0"></label>`) +
     `<div class="prwrap" id="prwrap"><canvas id="pr"></canvas></div>`;
   bindClipBar(fc);
   $('#prGrid').onchange = e => { UI.prGrid = +e.target.value; draw(); };
@@ -487,13 +487,13 @@ function regionPeak(b, c) { const sr = b.sampleRate, s0 = Math.floor((c.offset |
 function renderAudioEditor(fc, box) {
   const c = fc.c, b = E.buffers.get(c.sample);
   box.innerHTML = clipBar(fc) + `<div class="dev" style="max-width:none"><div class="ps">
-    <div class="pr"><label>Gain</label><input id="aG" type="range" min="-24" max="12" step="0.1" value="${c.gain || 0}"><output>${(c.gain || 0).toFixed(1)} dB</output></div>
-    <div class="pr"><label>Trim start</label><input id="aO" type="range" min="0" max="${b ? b.duration.toFixed(2) : 0}" step="0.01" value="${c.offset || 0}"><output>${(c.offset || 0).toFixed(2)} s</output></div>
+    <div class="pr"><label>Gain</label><input id="aG" data-def="0" type="range" min="-24" max="12" step="0.1" value="${c.gain || 0}"><output>${(c.gain || 0).toFixed(1)} dB</output></div>
+    <div class="pr"><label>Trim start</label><input id="aO" data-def="0" type="range" min="0" max="${b ? b.duration.toFixed(2) : 0}" step="0.01" value="${c.offset || 0}"><output>${(c.offset || 0).toFixed(2)} s</output></div>
     <div class="pr"><label>Source</label><span>${esc(audioName(c.sample))} · ${b ? b.duration.toFixed(1) + ' s' : 'missing audio'}</span></div>
-    <div class="pr"><label>Fade in</label><input id="aFi" type="range" min="0" max="${Math.max(0.25, c.len / 2).toFixed(2)}" step="0.0625" value="${c.fadeIn || 0}"><output>${(c.fadeIn || 0).toFixed(2)} beats</output></div>
-    <div class="pr"><label>Fade out</label><input id="aFo" type="range" min="0" max="${Math.max(0.25, c.len / 2).toFixed(2)}" step="0.0625" value="${c.fadeOut || 0}"><output>${(c.fadeOut || 0).toFixed(2)} beats</output></div>
-    <div class="pr"><label title="Varispeed: changes speed and pitch together">Speed / pitch</label><input id="aRate" type="range" min="-12" max="12" step="1" value="${Math.round(12 * Math.log2(c.rate || 1))}"><output>${Math.round(12 * Math.log2(c.rate || 1))} st</output></div>
-    <div class="pr"><label title="Strip Silence threshold">Silence below</label><input id="aTh" type="range" min="-70" max="-10" step="1" value="${UI.stripTh || -40}"><output>${UI.stripTh || -40} dB</output></div>
+    <div class="pr"><label>Fade in</label><input id="aFi" data-def="0" type="range" min="0" max="${Math.max(0.25, c.len / 2).toFixed(2)}" step="0.0625" value="${c.fadeIn || 0}"><output>${(c.fadeIn || 0).toFixed(2)} beats</output></div>
+    <div class="pr"><label>Fade out</label><input id="aFo" data-def="0" type="range" min="0" max="${Math.max(0.25, c.len / 2).toFixed(2)}" step="0.0625" value="${c.fadeOut || 0}"><output>${(c.fadeOut || 0).toFixed(2)} beats</output></div>
+    <div class="pr"><label title="Varispeed: changes speed and pitch together">Speed / pitch</label><input id="aRate" data-def="0" type="range" min="-12" max="12" step="1" value="${Math.round(12 * Math.log2(c.rate || 1))}"><output>${Math.round(12 * Math.log2(c.rate || 1))} st</output></div>
+    <div class="pr"><label title="Strip Silence threshold">Silence below</label><input id="aTh" data-def="-40" type="range" min="-70" max="-10" step="1" value="${UI.stripTh || -40}"><output>${UI.stripTh || -40} dB</output></div>
     <div class="prbar"><button id="aFit">Fit length to audio</button><button id="aSplit">Split at playhead (Ctrl+E)</button><button id="aStrip" title="Pro Tools Strip Silence: cut the clip into pieces wherever it's quiet">Strip silence</button><button id="aNorm" title="Raise the clip gain so its loudest peak hits -0.3 dB">Normalize</button><button id="aRev" title="Play the clip backwards">Reverse</button></div></div></div>`;
   bindClipBar(fc);
   $('#aG').oninput = e => { c.gain = +e.target.value; e.target.nextElementSibling.textContent = c.gain.toFixed(1) + ' dB'; renderLanes(); };
@@ -538,7 +538,7 @@ function paramsHtml(params, vals, key) {
     if (p.type === 'select') return `<div class="pr"><label>${p.label}</label><select data-k="${key}" data-p="${p.id}">${p.options.map(o => `<option ${o === v ? 'selected' : ''}>${o}</option>`).join('')}</select></div>`;
     if (p.type === 'track') { const self = devOwner()?.id; return `<div class="pr"><label>${p.label}</label><select data-k="${key}" data-p="${p.id}"><option value="">— choose the kick or key track —</option>${P().tracks.filter(t => t.id !== self && t.kind !== 'group').map(t => `<option value="${t.id}" ${t.id === v ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}</select></div>`; }
     if (p.type === 'toggle') return `<div class="pr"><label>${p.label}</label><input type="checkbox" data-k="${key}" data-p="${p.id}" ${v ? 'checked' : ''} style="justify-self:start;width:20px;height:20px;accent-color:var(--rose)"></div>`;
-    return `<div class="pr"><label title="${p.label}">${p.label}</label><input type="range" data-k="${key}" data-p="${p.id}" min="${p.log ? 0 : p.min}" max="${p.log ? 1000 : p.max}" step="${p.log ? 1 : p.step}" value="${toPos(p, v)}"><output>${fmt(p, v)}</output></div>`; }).join('');
+    return `<div class="pr"><label title="${p.label}">${p.label}</label><input type="range" data-k="${key}" data-p="${p.id}" data-def="${toPos(p, p.def)}" ${p.log ? `data-log="1" data-vmin="${p.min}" data-vmax="${p.max}"` : ""} min="${p.log ? 0 : p.min}" max="${p.log ? 1000 : p.max}" step="${p.log ? 1 : p.step}" value="${toPos(p, v)}"><output>${fmt(p, v)}</output></div>`; }).join('');
 }
 function devOwner() { const d = UI.dev; return d.kind === 'master' ? P().master : d.kind === 'return' ? P().returns.find(r => r.id === d.id) : trk(d.id); }
 function renderDevices() {
@@ -658,11 +658,11 @@ async function openWamGui(wam) {
 // ---------- mixer ----------
 function chHtml(kind, o, name, color) {
   const sel = (UI.dev.kind === kind && (kind === 'master' || UI.dev.id === o.id)) ? 'sel' : '';
-  const sends = kind === 'track' ? `<div class="snd">${P().returns.map(r => `<span>${r.id}</span><input type="range" min="0" max="1" step="0.01" value="${o.sends[r.id] || 0}" data-send="${r.id}" aria-label="Send ${r.name}">`).join('')}</div>` : '<div class="snd" style="min-height:34px"></div>';
-  const pan = kind === 'track' ? `<input type="range" min="-1" max="1" step="0.01" value="${o.pan}" data-pan style="width:100%" aria-label="Pan" title="Pan">` : '<div style="height:20px"></div>';
+  const sends = kind === 'track' ? `<div class="snd">${P().returns.map(r => `<span>${r.id}</span><input type="range" min="0" max="1" step="0.01" value="${o.sends[r.id] || 0}" data-def="0" data-send="${r.id}" aria-label="Send ${r.name}">`).join('')}</div>` : '<div class="snd" style="min-height:34px"></div>';
+  const pan = kind === 'track' ? `<input type="range" min="-1" max="1" step="0.01" value="${o.pan}" data-def="0" data-pan style="width:100%" aria-label="Pan" title="Pan">` : '<div style="height:20px"></div>';
   const outSel = kind === 'track' && o.kind !== 'group' ? `<select class="outsel" aria-label="Output" title="Where this track's sound goes"><option value="master">→ Master</option>${P().tracks.filter(g => g.kind === 'group').map(g => `<option value="${g.id}" ${o.out === g.id ? 'selected' : ''}>→ ${esc(g.name)}</option>`).join('')}</select>` : kind === 'track' ? '<div class="fx">Group bus</div>' : '';
   return `<div class="ch ${sel}" data-kind="${kind}" data-id="${o.id || ''}" style="--c:${color}"><div class="cname" title="${esc(name)}">${esc(name)}</div>${outSel}<div class="fx">${o.inserts.map(s => s.type === 'wam' ? 'Web' : EFFECTS[s.type]?.name.split(' ')[0]).join(' · ') || '—'}</div>${sends}${pan}
-    <div class="fz"><input class="fader" type="range" min="-60" max="6" step="0.1" value="${o.vol}" aria-label="${esc(name)} volume"><canvas class="mtr" width="12" height="100"></canvas></div><div class="db">${o.vol <= -60 ? '−∞' : o.vol.toFixed(1)} dB</div>
+    <div class="fz"><input class="fader" type="range" min="-60" max="6" step="0.1" value="${o.vol}" data-def="0" title="Double-click: back to 0 dB" aria-label="${esc(name)} volume"><canvas class="mtr" width="12" height="100"></canvas></div><div class="db">${o.vol <= -60 ? '−∞' : o.vol.toFixed(1)} dB</div>
     <div class="btns">${kind === 'track' ? `<button class="m ${o.mute ? 'on' : ''}" data-ms="mute">M</button><button class="s ${o.solo ? 'on' : ''}" data-ms="solo">S</button>` : ''}<button data-fx>FX</button></div></div>`;
 }
 function renderMixer() {
@@ -681,7 +681,7 @@ $('#mixer').addEventListener('click', async e => {
   const ch = e.target.closest('.ch'); if (!ch) return; const o = mixOwner(ch);
   if (e.target.dataset.ms) { snapshot(); o[e.target.dataset.ms] = !o[e.target.dataset.ms]; await commit(false); return; }
   UI.dev = { kind: ch.dataset.kind, id: ch.dataset.id }; if (ch.dataset.kind === 'track') UI.track = ch.dataset.id;
-  if ('fx' in e.target.dataset) setTab('devices'); else { renderMixer(); renderHeads(); }
+  if ('fx' in e.target.dataset) setTab('devices'); else { document.querySelectorAll('#mixer .ch').forEach(c => c.classList.toggle('sel', c === ch)); renderHeads(); }
 });
 
 // ---------- plugins tab ----------
@@ -726,6 +726,79 @@ async function splitClip() {
   fc.t.clips.push(d); await commit(false);
 }
 
+// ---------- install, download, about ----------
+export const VERSION = '1.0.0';
+let installEvt = null;
+addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; });
+addEventListener('appinstalled', () => toast('Rose is installed — open it from your Dock, Launchpad or Start menu'));
+if ('serviceWorker' in navigator && location.protocol === 'https:' && !/claude\.ai|claudeusercontent/.test(location.hostname)) navigator.serviceWorker.register('sw.js').catch(() => { });
+const DL = 'https://github.com/mosheshlomorosenfeld-alt/Rose/releases/latest';
+$('#bInstall').onclick = async () => {
+  if (installEvt) { installEvt.prompt(); const r = await installEvt.userChoice; installEvt = null; if (r.outcome === 'accepted') return; }
+  if (matchMedia('(display-mode: standalone)').matches) return toast('You\u2019re already using the installed app');
+  dialog('Install Rose', `<ol><li><b>Chrome or Edge</b> (Mac or PC): click the install icon at the right end of the address bar, or ⋮ menu → <i>Cast, save and share</i> → <i>Install page as app</i>.</li>
+    <li><b>Safari on Mac</b>: menu bar → <i>File</i> → <i>Add to Dock</i>.</li><li><b>iPad / iPhone</b>: Share button → <i>Add to Home Screen</i>.</li></ol>
+    <p>The installed app gets its own window and icon, and opens even without internet. Your songs stay saved inside it.</p>`);
+};
+$('#bDownload').onclick = () => dialog('Rose desktop app', `<p>The desktop version runs your real <b>VST3 and Audio Unit plugins</b> (Serum, SHRUB, FabFilter, Softube Flow, Google Flow Music…).</p>
+  <p><a class="tb accent" href="${DL}/download/Rose-mac.zip" target="_blank" rel="noopener">Download for Mac</a> <a class="tb" href="${DL}/download/Rose-windows.zip" target="_blank" rel="noopener">Download for Windows</a></p>
+  <p style="font-size:13px"><a href="download.html" target="_blank" rel="noopener">Full download page</a> · <code>${DL}</code><br>Mac first launch: unzip, drag Rose to Applications, then right-click Rose → <i>Open</i> → <i>Open</i> (it isn't signed with an Apple developer certificate yet).</p>`);
+$('#bAbout').onclick = () => dialog('Rose Studio', `<div style="display:flex;gap:16px;align-items:center"><img src="icons/icon-192.png" width="72" height="72" alt="" style="border-radius:16px"><div><b style="font:700 20px 'Space Grotesk'">Rose Studio ${VERSION}</b><br><span style="color:var(--mute)">by Rosenfeld Productions · TABC Studio 1600</span></div></div>
+  <p>${Object.keys(EFFECTS).length} effects · ${Object.keys(INSTRUMENTS).length} instruments · automation · clip launcher · patterns · arpeggiator · chord pads · sidechain · group buses · Strip Silence · WAV &amp; MIDI export.</p>
+  <p style="color:var(--mute);font-size:13px">Desktop app with VST3/AU hosting: File → Download desktop app.</p>`);
+function dialog(title, html) {
+  $('.help')?.remove(); const d = document.createElement('div'); d.className = 'help';
+  d.innerHTML = `<div class="card" role="dialog" aria-label="${esc(title)}" style="max-width:560px"><h2>${esc(title)}</h2>${html}<button class="tb accent" data-close style="margin-top:10px">Close</button></div>`;
+  document.body.append(d); d.onclick = e => { if (e.target === d || e.target.closest('[data-close]')) d.remove(); }; d.querySelector('[data-close]').focus();
+}
+
+// ---------- double-click controls ----------
+// Pro-DAW behaviour: double-click any knob, fader or slider to reset it; double-click a value to type an exact number.
+function fire(el) { el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true })); }
+function typeValue(out) {
+  const range = out.previousElementSibling; if (!range || range.type !== 'range' || out.querySelector('input')) return;
+  const ed = document.createElement('input'); ed.className = 'valedit'; ed.value = out.textContent.replace(/\s*(Hz|dB|ms|s|st|beats|x|ct|×|:1)$/, ''); out.textContent = ''; out.append(ed); ed.focus(); ed.select();
+  const done = ok => {
+    if (ok) {
+      let t = ed.value.trim().toLowerCase(), v = parseFloat(t); if (/k\s*(hz)?$/.test(t)) v *= 1000; if (/ms$/.test(t) && +range.max <= 60) v = v / 1000;
+      if (Number.isFinite(v)) { const d = range.dataset; let pos = v;
+        if (d.log) { const lo = +d.vmin, hi = +d.vmax; v = Math.max(lo, Math.min(hi, v)); pos = Math.log(v / lo) / Math.log(hi / lo) * 1000; }
+        range.value = Math.max(+range.min, Math.min(+range.max, pos)); fire(range); }
+    }
+    if (!out.textContent || out.contains(ed)) { ed.remove(); fire(range); }
+  };
+  ed.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); };
+  ed.onblur = () => done(true);
+}
+// sliders: detect the double-click ourselves (browsers skip dblclick on some sliders, e.g. vertical faders)
+let lastPD = { el: null, t: 0 };
+document.addEventListener('pointerdown', e => {
+  const r = e.target.closest('input[type=range][data-def]'); if (!r) return; const now = performance.now();
+  if (lastPD.el === r && now - lastPD.t < 400) {
+    lastPD = { el: null, t: 0 }; const reset = () => { r.value = r.dataset.def; fire(r); };
+    r.addEventListener('pointerup', () => { reset(); toastQuiet('Reset to default'); }, { once: true }); setTimeout(reset, 0);
+  } else lastPD = { el: r, t: now };
+}, true);
+document.addEventListener('dblclick', e => {
+  if (e.target.closest('input[type=range][data-def]')) return;
+  const o = e.target.closest('.pr output'); if (o) { typeValue(o); return; }
+  if (e.target.closest('.lcd')) { goToBar(); return; }
+  const dt = e.target.closest('.dev h4 .t'); if (dt) { dt.closest('.dev').querySelector('[data-a=byp]')?.click(); return; }
+  const cn = e.target.closest('.ch .cname'); if (cn) { const ch = cn.closest('.ch'); UI.dev = { kind: ch.dataset.kind, id: ch.dataset.id }; if (ch.dataset.kind === 'track') UI.track = ch.dataset.id; setTab('devices'); return; }
+  const cs = e.target.closest('.th .cs'); if (cs) { const t = trk(cs.closest('.th').dataset.id); snapshot(); const C = ['#ff4f8b', '#ffb020', '#22c55e', '#3b82f6', '#a855f7', '#14b8a6', '#f43f5e', '#eab308', '#06b6d4', '#f97316']; t.color = C[(C.indexOf(t.color) + 1) % C.length]; commit(false); return; }
+  if (e.target.closest('.tabs [data-tab]') && UI.tab === e.target.closest('[data-tab]').dataset.tab) { const cur = getComputedStyle(document.documentElement).getPropertyValue('--dockH').trim(); document.documentElement.style.setProperty('--dockH', cur === '70vh' ? '44vh' : '70vh'); setTimeout(() => { renderLanes(); if (UI.tab === 'devices') fitRack(); }, 50); return; }
+  if (e.target.closest('#ruler') && UI.view !== 'session' && !e.target.closest('.loopr')) { const r2 = $('#ruler').getBoundingClientRect(); const b = Math.max(0, (e.clientX - r2.left) / UI.ppb); E.stop(true); E.p.cursor = b; E.play(b); return; }
+  if (e.target.closest('.loopr')) { $('#bLoop').click(); return; }
+});
+function goToBar() {
+  const lcd = $('.lcd'); if (lcd.querySelector('input')) return; const span = $('#pos');
+  const ed = document.createElement('input'); ed.className = 'valedit'; ed.value = span.textContent; ed.setAttribute('aria-label', 'Go to bar.beat'); span.hidden = true; lcd.prepend(ed); ed.focus(); ed.select();
+  let closed = false;
+  const done = ok => { if (closed) return; closed = true; const [bar, beat = 1] = ed.value.split('.').map(Number); ed.remove(); span.hidden = false; if (ok && bar > 0) E.seek((bar - 1) * P().sig + (beat - 1)); };
+  ed.onkeydown = e => { e.stopPropagation(); if (e.key === 'Enter') done(true); if (e.key === 'Escape') done(false); };
+  ed.onblur = () => done(true);
+}
+
 // ---------- library ----------
 const PRESET_INFO = { 'Supersaw Lead': 'Big EDM lead', 'Pluck': 'Short, bouncy pluck', 'Warm Pad': 'Soft chords that swell', 'Sub Bass': 'Deep, clean low end', 'Reese Bass': 'Wide, gritty bass', 'Keys': 'Electric-piano style', 'Chip Square': '8-bit game sound', 'Brass': 'Punchy stabs' };
 const FX_INFO = { eq: 'Shape the tone', filter: 'Sweeps & wobbles', comp: 'Even out levels, add punch', limiter: 'Make it loud, stop clipping', gate: 'Cut background noise', reverb: 'Room & space', delay: 'Echoes in time', chorus: 'Thicker, wider', flanger: 'Jet-plane swoosh', phaser: 'Swirling movement', tremolo: 'Volume / pan wobble', pump: 'EDM sidechain pump', distortion: 'Grit & warmth', crusher: 'Lo-fi crunch', width: 'Wider stereo', utility: 'Gain, mono, phase' };
@@ -768,7 +841,7 @@ $('#lib').addEventListener('click', async e => {
 function showHelp() {
   if ($('.help')) return $('.help').remove();
   const d = document.createElement('div'); d.className = 'help'; d.innerHTML = `<div class="card" role="dialog" aria-label="How to use Rose">
-  <h2>Rose in one minute</h2><p style="color:var(--mute);margin:0">Everything starts from <b>Add track</b> and the <b>Library</b>.</p>
+  <h2>Rose Studio in one minute</h2><p style="color:var(--mute);margin:0">Everything starts from <b>Add track</b> and the <b>Library</b>.</p>
   <div class="cols"><div><h3>Make a beat</h3><ol><li>Add track → <b>Drums</b></li><li>Click the squares in the Editor below — each column is a 16th note</li><li>Shift-click a square for a louder hit</li><li>Press <kbd>Space</kbd> to hear it loop</li></ol>
   <h3>Play &amp; record notes</h3><ol><li>Pick an instrument in the Library</li><li>Play with your keyboard: <kbd>A</kbd>–<kbd>;</kbd> (<kbd>Z</kbd>/<kbd>X</kbd> change octave) or a MIDI keyboard</li><li>Click ● on the track, then Record (<kbd>R</kbd>)</li><li>Or double-click a lane and click in the piano roll to draw notes</li></ol></div>
   <div><h3>Record vocals</h3><ol><li>Add track → <b>Audio / vocals</b></li><li>Click ● on it, then Record — allow the microphone</li><li>Stop with <kbd>Space</kbd>; your take appears as a clip</li></ol>
@@ -777,6 +850,7 @@ function showHelp() {
   <h3>Patterns (FL Studio style)</h3><ol><li>Library → <b>+ New pattern</b>, or “Make pattern” on a clip</li><li>Click the pattern in the Library to paint copies — edit one, they all change</li></ol></div>
   <div><h3>Session / clip launcher (Ableton style)</h3><ol><li>Switch to <b>Session</b> at the top</li><li>Double-click a slot to make a clip, or send a clip there with “→ Session”</li><li>Press ▶ on a clip or a whole Scene — it starts on the next bar</li></ol>
   <h3>Pro mixing</h3><ol><li><b>Sidechain Compressor</b>: pick the kick as its key track</li><li>Add track → <b>Group bus</b>, then route tracks to it in the Mixer</li><li>Track ⋯ → <b>Bounce to audio</b> to print a track with its effects</li><li>The Mixer shows a live spectrum of your master</li></ol></div></div>
+  <h3>Double-click</h3><p style="color:var(--mute)">Any knob, fader or slider → reset · a value → type an exact number (e.g. <kbd>2.5k</kbd>) · an empty lane → new clip · a clip → open its editor · the ruler → play from there · the loop bar → loop on/off · the counter → jump to a bar · an effect's name → bypass · a mixer channel's name → its effects · a track's colour strip → next colour · the active tab → make the panel bigger</p>
   <h3>Shortcuts</h3><p style="color:var(--mute)"><kbd>Space</kbd> play/pause · <kbd>Enter</kbd> stop · <kbd>R</kbd> record · <kbd>M</kbd> metronome · <kbd>Del</kbd> delete clip · <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate · <kbd>Ctrl</kbd>+<kbd>E</kbd> split · <kbd>Ctrl</kbd>+<kbd>Z</kbd> undo · <kbd>Ctrl</kbd>+<kbd>S</kbd> save · <kbd>?</kbd> this guide</p>
   <p style="color:var(--mute)">Your song saves itself in this browser. Use File → Save project to keep a copy or move it to another computer. For VST/AU plugins (Serum, SHRUB…) use Rose Desktop — see the Plugins tab.</p>
   <button class="tb accent" id="helpClose" style="margin-top:8px">Got it</button></div>`;

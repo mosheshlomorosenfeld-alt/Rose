@@ -1,4 +1,12 @@
-# Rose
+# Rose Studio
+
+**Download:** https://mosheshlomorosenfeld-alt.github.io/Rose/download.html
+- **Mac** (Apple Silicon + Intel): [Rose-mac.zip](https://github.com/mosheshlomorosenfeld-alt/Rose/releases/latest/download/Rose-mac.zip)
+- **Windows** 10/11: [Rose-windows.zip](https://github.com/mosheshlomorosenfeld-alt/Rose/releases/latest/download/Rose-windows.zip)
+- **Web app** (installable, works offline): https://mosheshlomorosenfeld-alt.github.io/Rose/ → File → Install Rose app
+
+The desktop downloads are built automatically by GitHub Actions (`.github/workflows/desktop.yml`) every time `native/` changes, and published on the Releases page.
+
 
 A DAW by Rosenfeld Productions, in two versions:
 

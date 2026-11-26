@@ -3,11 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Rose DAW</title>
+<title>Rose Studio</title>
 <meta name="description" content="Rose — a browser DAW by Rosenfeld Productions: arrange, record, sequence, mix and master.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="css/rose.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon-64.png" type="image/png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="theme-color" content="#16121d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Rose">
 <script>try{const s=localStorage.getItem('rose:skin');if(s)document.documentElement.dataset.skin=s}catch{}</script>
 </head>
 <body>
@@ -25,7 +31,7 @@
 </svg>
 <div id="app">
   <header class="top">
-    <div class="brand">Rose</div>
+    <button class="brand" id="bAbout" title="About Rose Studio">Rose</button>
     <div class="grp" role="group" aria-label="Transport">
       <button id="bHome" class="ib" title="Back to start (Home)" aria-label="Back to start"><svg><use href="#i-home"/></svg></button>
       <button id="bPlay" class="ib play" title="Play / pause (Space)" aria-label="Play"><svg><use href="#i-play"/></svg></button>
@@ -86,12 +92,14 @@
   <button id="bSave"><span class="ic">↓</span><b>Save project</b><small>Download a .rose file (Ctrl+S)</small></button>
   <button id="bImportBtn"><span class="ic">~</span><b>Import audio…</b><small>WAV, MP3, M4A, OGG, FLAC</small></button>
   <button id="bExport"><span class="ic">♫</span><b>Export WAV</b><small>Mixdown of the whole song</small></button>
+  <button id="bInstall"><span class="ic">⇩</span><b>Install Rose app</b><small>Get Rose on your Dock / desktop — works offline</small></button>
+  <button id="bDownload"><span class="ic">◆</span><b>Download desktop app</b><small>Mac &amp; Windows — runs VST3 / AU plugins</small></button>
 </div>
 <input id="fOpen" type="file" accept=".rose,application/json" hidden>
 <input id="fImport" type="file" accept="audio/*" multiple hidden>
 
 <div class="start" id="startScreen"><div>
-  <h1>Rose</h1><p>Make beats, record vocals, mix and master — right in your browser.</p>
+  <img src="icons/icon-192.png" alt="" width="84" height="84" style="border-radius:20px"><h1>Rose Studio</h1><p>Make beats, record vocals, mix and master. By Rosenfeld Productions.</p>
   <div class="choices">
     <button class="choice main" id="bStart"><b id="startLabel">Start with a demo beat</b><span id="startSub">Drums, bass and chords ready to play</span></button>
     <button class="choice" id="bBlank"><b>Blank song</b><span>Empty tracks, your idea</span></button>

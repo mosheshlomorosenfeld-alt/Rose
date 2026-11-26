@@ -1,0 +1,82 @@
+name: Build desktop app
+
+# Builds Rose Studio for Mac (Apple Silicon + Intel) and Windows and publishes them
+# on the "Releases" page: github.com/mosheshlomorosenfeld-alt/Rose/releases/latest
+on:
+  push:
+    branches: [main]
+    paths: ["native/**", ".github/workflows/desktop.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            name: mac
+          - os: windows-latest
+            name: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Mac, universal)
+        if: matrix.name == 'mac'
+        run: cmake -S native -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Configure (Windows)
+        if: matrix.name == 'windows'
+        run: cmake -S native -B build
+
+      - name: Build
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Package (Mac)
+        if: matrix.name == 'mac'
+        run: |
+          APP=$(find build -name "Rose Studio.app" -maxdepth 4 -type d | head -1)
+          codesign --force --deep --sign - "$APP"
+          ditto -c -k --sequesterRsrc --keepParent "$APP" Rose-mac.zip
+
+      - name: Package (Windows)
+        if: matrix.name == 'windows'
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem -Recurse build -Filter "Rose Studio.exe" | Select-Object -First 1
+          New-Item -ItemType Directory -Force -Path "Rose Studio" | Out-Null
+          Copy-Item $exe.FullName "Rose Studio/"
+          Compress-Archive -Path "Rose Studio" -DestinationPath Rose-windows.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Rose-${{ matrix.name }}
+          path: Rose-${{ matrix.name }}.zip
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: Rose Studio 1.0.${{ github.run_number }}
+          make_latest: "true"
+          body: |
+            **Rose Studio desktop** — runs your VST3 and Audio Unit plugins.
+
+            - **Mac** (Apple Silicon + Intel, macOS 11+): download `Rose-mac.zip`, unzip, drag **Rose Studio** to Applications, then right-click it → **Open** → **Open** the first time.
+            - **Windows** (10/11): download `Rose-windows.zip`, unzip, run **Rose Studio.exe**. If SmartScreen appears: **More info** → **Run anyway**.
+
+            Web version: https://mosheshlomorosenfeld-alt.github.io/Rose/
+          files: |
+            Rose-mac.zip
+            Rose-windows.zip
