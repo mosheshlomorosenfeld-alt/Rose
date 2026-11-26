@@ -68,7 +68,7 @@ export async function prepareWorklets(ctx) {
     loaded.add(ctx);
   } catch (e) { console.warn('Worklets unavailable; gate and bitcrusher will pass audio through', e); }
 }
-const worklet = (ctx, name, inputs = 1) => { try { return loaded.has(ctx) ? new AudioWorkletNode(ctx, name, { numberOfInputs: inputs, outputChannelCount: [2] }) : null; } catch { return null; } };
+export const worklet = (ctx, name, inputs = 1) => { try { return loaded.has(ctx) ? new AudioWorkletNode(ctx, name, { numberOfInputs: inputs, outputChannelCount: [2] }) : null; } catch { return null; } };
 
 const db = v => Math.pow(10, v / 20);
 const R = (id, label, min, max, def, step = 0.01, unit = '', log = false) => ({ id, label, type: 'range', min, max, def, step, unit, log });

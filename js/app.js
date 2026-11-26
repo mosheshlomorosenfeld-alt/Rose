@@ -1,6 +1,6 @@
 // Rose — UI: arrangement, track headers, piano roll, step sequencer, device rack, mixer, plugins, keyboard & MIDI.
-import { Engine, newTrack, newProject, blankProject, projectFromTemplate, uid, db, isMidi, upgrade, autoRange, SCENES, encodeWav } from './engine.js';
-import { EFFECTS } from './effects.js';
+import { Engine, clipRate, clipSemis, midiShift, newTrack, newProject, blankProject, projectFromTemplate, uid, db, isMidi, upgrade, autoRange, SCENES, encodeWav } from './engine.js';
+import { EFFECTS, worklet } from './effects.js';
 import { INSTRUMENTS, SYNTH_PRESETS, SOUND_LIB, DRUM_ROWS, instDefaults, ARP_PARAMS, CHORD_PARAMS, midiDefaults, applyMidiFx, chordOf } from './instruments.js';
 
 const E = new Engine(); window.roseEngine = E;
@@ -166,7 +166,7 @@ function renderHeads() {
     const autoSel = t.autoShow ? `<select class="autosel" aria-label="Automation parameter">${autoTargets(t).map(([v, l]) => `<option value="${v}" ${v === t.autoShow ? 'selected' : ''}>${esc(l)}${t.auto.some(a => a.target === v && a.points.length) ? ' •' : ''}</option>`).join('')}</select>` : '';
     return `<div class="th ${t.id === UI.track ? 'sel' : ''}" data-id="${t.id}" style="--c:${t.color}">
     <div class="cs"></div><div class="body">
-      <div class="row"><input class="name" value="${esc(t.name)}" aria-label="Track name"><button class="sm" data-act="menu" title="Track options" aria-label="Track options">⋯</button></div>
+      <div class="row"><input class="name" value="${esc(t.name)}" aria-label="Track name">${t.transpose ? `<span class="tbadge" title="Track transpose — everything on this track sounds ${Math.abs(t.transpose)} semitone${Math.abs(t.transpose) > 1 ? 's' : ''} ${t.transpose > 0 ? 'higher' : 'lower'}">${t.transpose > 0 ? '+' : ''}${t.transpose}</span>` : ''}<button class="sm" data-act="menu" title="Track options" aria-label="Track options">⋯</button></div>
       <div class="row"><button class="sm m ${t.mute ? 'on' : ''}" data-act="mute" title="Mute">M</button><button class="sm s ${t.solo ? 'on' : ''}" data-act="solo" title="Solo">S</button>${grp ? '' : `<button class="sm a ${t.arm ? 'on' : ''}" data-act="arm" title="Arm for recording">●</button>`}<button class="sm au ${t.autoShow ? 'on' : ''} ${t.auto?.some(a => a.points.length) ? 'has' : ''}" data-act="auto" title="Show automation (draw volume, pan and effect changes over time)">A</button>
       <input class="vol" type="range" min="-60" max="6" step="0.5" value="${t.vol}" data-def="0" aria-label="Volume" title="${t.vol} dB"></div>
       ${autoSel || `<div class="kind">${kind}${t.inserts.length ? `, ${t.inserts.length} effect${t.inserts.length === 1 ? '' : 's'}` : ''}${outTo}</div>`}</div></div>`;
@@ -206,11 +206,22 @@ function trackMenu(t, anchor) {
   menuAt(anchor, [
     { icon: '⇩', label: 'Bounce to audio', sub: 'Render this track with its effects to a new audio track', run: () => bounceInPlace(t) },
     { icon: '⧉', label: 'Duplicate track', sub: 'Copy clips, sound and effects', run: () => duplicateTrack(t) },
+    { icon: '♯', label: `Transpose track${t.transpose ? ` (now ${t.transpose > 0 ? '+' : ''}${t.transpose})` : ''}`, sub: t.inst === 'drums' ? 'Drum kits keep their sounds in place' : 'Shift every clip on this track — audio and MIDI', disabled: t.inst === 'drums', run: () => transposeTrackDialog(t) },
     { icon: '●', label: 'Change colour', run: async () => { snapshot(); const C = ['#ff4f8b', '#ffb020', '#22c55e', '#3b82f6', '#a855f7', '#14b8a6', '#f43f5e', '#eab308', '#06b6d4', '#f97316']; t.color = C[(C.indexOf(t.color) + 1) % C.length]; await commit(false); } },
     { icon: '↑', label: 'Move up', disabled: i === 0, run: async () => { snapshot(); [P().tracks[i - 1], P().tracks[i]] = [P().tracks[i], P().tracks[i - 1]]; await commit(false); } },
     { icon: '↓', label: 'Move down', disabled: i === P().tracks.length - 1, run: async () => { snapshot(); [P().tracks[i + 1], P().tracks[i]] = [P().tracks[i], P().tracks[i + 1]]; await commit(false); } },
     { icon: '×', label: 'Delete track', sub: 'You can undo', run: async () => { snapshot(); P().tracks = P().tracks.filter(x => x !== t); P().tracks.forEach(x => { if (x.out === t.id) x.out = 'master'; }); if (UI.track === t.id) UI.track = P().tracks[0]?.id; await commit(true); } }
   ]);
+}
+function transposeTrackDialog(t) {
+  const v = t.transpose || 0;
+  dialog(`Transpose ${t.name}`, `<p class="small" style="margin:0 0 12px">Moves everything on this track up or down without changing its speed — MIDI notes, audio and loops. Live keyboard playing follows too.</p>
+    <div class="pitchctl big"><button data-tt="-12">−12</button><button data-tt="-1">−1</button><output id="ttv">${v > 0 ? '+' : ''}${v}</output><button data-tt="1">+1</button><button data-tt="12">+12</button><button data-tt="0" style="margin-left:12px">Reset</button></div>`);
+  $('.help .pitchctl').onclick = async e => {
+    const b = e.target.closest('[data-tt]'); if (!b) return; snapshot(); const d = +b.dataset.tt;
+    t.transpose = d === 0 ? 0 : Math.max(-36, Math.min(36, (t.transpose || 0) + d)); if (!t.transpose) delete t.transpose;
+    $('#ttv').textContent = `${t.transpose > 0 ? '+' : ''}${t.transpose || 0}`; await commit(false);
+  };
 }
 async function duplicateTrack(t) {
   snapshot(); const c = JSON.parse(JSON.stringify(t)); c.id = uid(); c.name = t.name + ' copy'; c.arm = false; c.solo = false;
@@ -265,7 +276,8 @@ $('#ruler').addEventListener('pointerdown', e => {
   addEventListener('pointermove', move); addEventListener('pointerup', up);
 });
 
-const clipName = c => c.pattern ? '⧉ ' + (P().patterns[c.pattern]?.name || c.name) : (c.name || (isMidi(c) ? 'MIDI' : audioName(c.sample)));
+const clipName0 = c => c.pattern ? '⧉ ' + (P().patterns[c.pattern]?.name || c.name) : (c.name || (isMidi(c) ? 'MIDI' : audioName(c.sample)));
+const clipName = c => { const v = clipPitch(c); return clipName0(c) + (v ? ` · ${v > 0 ? '+' : ''}${v} st` : '') + (c.bpm ? ' · ⟲' : ''); };
 function renderLanes() {
   if (UI.view === 'session') return renderSession();
   const n = beatsShown(), w = n * UI.ppb, lp = P().loop, sl = ($('#lanesWrap').scrollLeft || 0) + 14;
@@ -381,6 +393,7 @@ $('#lanes').addEventListener('dblclick', async e => {
   const c = { id: uid(), name: t.name, start: b, len: P().sig, notes: [] }; t.clips.push(c); UI.clip = c.id; UI.track = t.id; await commit(false); setTab('editor');
 });
 ['dragover', 'drop'].forEach(ev => $('#lanesWrap').addEventListener(ev, async e => {
+  if ([...(e.dataTransfer?.types || [])].some(t => t.startsWith('application/x-rose'))) return;
   e.preventDefault(); if (ev === 'dragover') return; const files = [...(e.dataTransfer?.files || [])]; if (!files.length) return;
   if (UI.view === 'session') {
     const row = e.target.closest('.srow'), slot = e.target.closest('.slot'), t = row && trk(row.dataset.id); if (!t || !slot || t.kind !== 'audio') return toast('Drop audio onto an audio track slot');
@@ -410,7 +423,7 @@ function drawClip(el, fc) {
   } else {
     const pk = peaksFor(c.sample), b = E.buffers.get(c.sample); if (!pk) return; const sr = b.sampleRate / 256, mid = H / 2;
     const LL = c.loopLen && c.loopLen < c.len ? c.loopLen : c.len;
-    for (let x = 0; x < W; x++) { const bb = x / W * c.len, within = bb % LL; if (LL < c.len && within < c.len / W) { g.globalAlpha = .5; g.fillRect(x, 0, 1, H); g.globalAlpha = 1; } const sec = (c.offset || 0) + within * E.spb * (c.rate || 1), i = Math.floor(sec * sr); if (i >= pk.length) continue; const a = pk[i] * mid * db(c.gain || 0); g.fillRect(x, mid - a, 1, Math.max(1, a * 2)); }
+    for (let x = 0; x < W; x++) { const bb = x / W * c.len, within = bb % LL; if (LL < c.len && within < c.len / W) { g.globalAlpha = .5; g.fillRect(x, 0, 1, H); g.globalAlpha = 1; } const sec = (c.offset || 0) + within * E.spb * clipRate(c, P().bpm), i = Math.floor(sec * sr); if (i >= pk.length) continue; const a = pk[i] * mid * db(c.gain || 0); g.fillRect(x, mid - a, 1, Math.max(1, a * 2)); }
     g.strokeStyle = cssColor('--ink'); g.lineWidth = 1.2; g.beginPath();
     if (c.fadeIn) { const fx = c.fadeIn / c.len * W; g.moveTo(0, H); g.lineTo(fx, 0); }
     if (c.fadeOut) { const fx = W - c.fadeOut / c.len * W; g.moveTo(fx, 0); g.lineTo(W, H); } g.stroke();
@@ -439,9 +452,20 @@ function clipBar(fc, extra = '') {
   const ref = fc.ref || fc.c, midi = isMidi(ref), pat = !!ref.pattern;
   const patBits = midi ? (pat ? `<span class="pattag" title="This clip is a pattern: every copy plays the same notes, so editing one edits all">⧉ Pattern · edits change every copy</span><button id="cUnique">Make unique</button>` : `<button id="cPattern" title="Turn this clip into a pattern so its copies stay linked (FL Studio style)">Make pattern</button>`) : '';
   const where = fc.slot != null ? `<button id="cToArr" title="Copy this clip into the arrangement at the playhead">→ Arrangement</button>` : `<button id="cToSes" title="Copy this clip into the clip launcher">→ Session</button>`;
-  return `<div class="prbar"><input id="cName" value="${esc(fc.c.name)}" aria-label="${pat ? 'Pattern' : 'Clip'} name" style="width:140px;cursor:text"><label>${pat ? 'Pattern length' : 'Length'} <input id="cLen" type="number" min="0.25" step="0.25" value="${+fc.c.len.toFixed(3)}" style="width:72px;cursor:text"> beats</label>${extra}${patBits}${midi ? '<button id="cMid">Export .mid</button>' : ''}${where}${!pat ? `<button id="cLoop" class="${ref.loopLen ? 'on' : ''}" title="Loop: repeat this clip's content when you stretch it (Logic: L)">${ref.loopLen ? '↻ Loop on' : '↻ Loop'}</button>` : ''}<button id="cDup">Duplicate →</button><button id="cDel">Delete clip</button></div>`;
+  const pv = clipPitch(ref), pitchCtl = `<span class="pitchctl" title="Pitch in semitones — Alt+↑/↓, add Shift for an octave"><span>Pitch</span><button data-pt="-12" aria-label="Down an octave">−12</button><button data-pt="-1" aria-label="Down a semitone">−1</button><output id="cPitch">${pv > 0 ? '+' : ''}${pv}</output><button data-pt="1" aria-label="Up a semitone">+1</button><button data-pt="12" aria-label="Up an octave">+12</button></span>`;
+  return `<div class="prbar"><input id="cName" value="${esc(fc.c.name)}" aria-label="${pat ? 'Pattern' : 'Clip'} name" style="width:140px;cursor:text"><label>${pat ? 'Pattern length' : 'Length'} <input id="cLen" type="number" min="0.25" step="0.25" value="${+fc.c.len.toFixed(3)}" style="width:72px;cursor:text"> beats</label>${fc.t?.inst === 'drums' ? '' : pitchCtl}${extra}${patBits}${midi ? '<button id="cMid">Export .mid</button>' : ''}${where}${!pat ? `<button id="cLoop" class="${ref.loopLen ? 'on' : ''}" title="Loop: repeat this clip's content when you stretch it (Logic: L)">${ref.loopLen ? '↻ Loop on' : '↻ Loop'}</button>` : ''}<button id="cDup">Duplicate →</button><button id="cDel">Delete clip</button></div>`;
+}
+// Pitch of any clip: MIDI clips transpose their notes, audio clips use the pitch engine (speed unchanged)
+const clipPitch = c => isMidi(c) ? (c.transpose || 0) : (c.pitch || 0);
+function pitchClips(clips, d) {
+  clips = clips.filter(c => !(isMidi(c) && P().tracks.find(t => t.clips.includes(c))?.inst === 'drums'));
+  if (!clips.length) return toast('Drum kits don’t transpose — each note is a different drum'); snapshot();
+  for (const c of clips) { const k = isMidi(c) ? 'transpose' : 'pitch'; c[k] = Math.max(-48, Math.min(48, (c[k] || 0) + d)); if (!c[k]) delete c[k]; }
+  commit(false); const v = clipPitch(clips[0]); toast(`${clips.length > 1 ? clips.length + ' clips' : 'Clip'} pitch ${v > 0 ? '+' : ''}${v} st`);
 }
 function bindClipBar(fc, rerender) {
+  document.querySelectorAll('.pitchctl [data-pt]').forEach(b => b.onclick = () => pitchClips([fc.ref || fc.c], +b.dataset.pt));
+  if ($('#cPitch')) $('#cPitch').ondblclick = () => { const c = fc.ref || fc.c; if (clipPitch(c)) pitchClips([c], -clipPitch(c)); };
   $('#cName').onchange = e => { snapshot(); fc.c.name = e.target.value; commit(false); };
   $('#cLen').onchange = e => { snapshot(); fc.c.len = Math.max(0.25, +e.target.value || 4); commit(false); };
   if ($('#cMid')) $('#cMid').onclick = () => download(midiFile(fc.c, P().bpm), (fc.c.name || 'clip') + '.mid');
@@ -519,7 +543,7 @@ function renderSeq(fc, box) {
     renderSeq(fc, box); commitQuiet();
   };
 }
-function regionPeak(b, c) { const sr = b.sampleRate, s0 = Math.floor((c.offset || 0) * sr), s1 = Math.min(b.length, s0 + Math.floor(c.len * E.spb * (c.rate || 1) * sr)); let m = 0; for (let ch = 0; ch < b.numberOfChannels; ch++) { const d = b.getChannelData(ch); for (let i = s0; i < s1; i++) { const v = Math.abs(d[i]); if (v > m) m = v; } } return m; }
+function regionPeak(b, c) { const sr = b.sampleRate, s0 = Math.floor((c.offset || 0) * sr), s1 = Math.min(b.length, s0 + Math.floor(c.len * E.spb * clipRate(c, P().bpm) * sr)); let m = 0; for (let ch = 0; ch < b.numberOfChannels; ch++) { const d = b.getChannelData(ch); for (let i = s0; i < s1; i++) { const v = Math.abs(d[i]); if (v > m) m = v; } } return m; }
 function renderAudioEditor(fc, box) {
   const c = fc.c, b = E.buffers.get(c.sample);
   box.innerHTML = clipBar(fc) + `<div class="dev" style="max-width:none"><div class="ps">
@@ -528,7 +552,9 @@ function renderAudioEditor(fc, box) {
     <div class="pr"><label>Source</label><span>${esc(audioName(c.sample))} · ${b ? b.duration.toFixed(1) + ' s' : 'missing audio'}</span></div>
     <div class="pr"><label>Fade in</label><input id="aFi" data-def="0" type="range" min="0" max="${Math.max(0.25, c.len / 2).toFixed(2)}" step="0.0625" value="${c.fadeIn || 0}"><output>${(c.fadeIn || 0).toFixed(2)} beats</output></div>
     <div class="pr"><label>Fade out</label><input id="aFo" data-def="0" type="range" min="0" max="${Math.max(0.25, c.len / 2).toFixed(2)}" step="0.0625" value="${c.fadeOut || 0}"><output>${(c.fadeOut || 0).toFixed(2)} beats</output></div>
-    <div class="pr"><label title="Varispeed: changes speed and pitch together">Speed / pitch</label><input id="aRate" data-def="0" type="range" min="-12" max="12" step="1" value="${Math.round(12 * Math.log2(c.rate || 1))}"><output>${Math.round(12 * Math.log2(c.rate || 1))} st</output></div>
+    <div class="pr"><label title="Fine pitch, in cents (100 = one semitone)">Fine pitch</label><input id="aFine" data-def="0" type="range" min="-100" max="100" step="1" value="${c.fine || 0}"><output>${c.fine || 0} ¢</output></div>
+    ${c.bpm ? `<div class="pr"><label title="Library loops stretch to the song tempo">Tempo</label><span>Follows the song · recorded at ${+c.bpm.toFixed(1)} BPM <button id="aWarp" title="Stop following the tempo (keep the current speed)">Unlock</button></span></div>`
+      : `<div class="pr"><label title="Varispeed: like a turntable, speed and pitch change together">Varispeed</label><input id="aRate" data-def="0" type="range" min="-12" max="12" step="1" value="${Math.round(12 * Math.log2(clipRate(c, P().bpm)))}"><output>${Math.round(12 * Math.log2(clipRate(c, P().bpm)))} st</output></div>`}
     <div class="pr"><label title="Strip Silence threshold">Silence below</label><input id="aTh" data-def="-40" type="range" min="-70" max="-10" step="1" value="${UI.stripTh || -40}"><output>${UI.stripTh || -40} dB</output></div>
     <div class="prbar"><button id="aFit">Fit length to audio</button><button id="aSplit">Split at playhead (Ctrl+E)</button><button id="aStrip" title="Pro Tools Strip Silence: cut the clip into pieces wherever it's quiet">Strip silence</button><button id="aNorm" title="Raise the clip gain so its loudest peak hits -0.3 dB">Normalize</button><button id="aRev" title="Play the clip backwards">Reverse</button></div></div></div>`;
   bindClipBar(fc);
@@ -536,20 +562,25 @@ function renderAudioEditor(fc, box) {
   $('#aG').onchange = () => { persist(); };
   $('#aO').oninput = e => { c.offset = +e.target.value; e.target.nextElementSibling.textContent = c.offset.toFixed(2) + ' s'; renderLanes(); };
   $('#aO').onchange = () => persist();
-  $('#aFit').onclick = () => { if (!b) return; snapshot(); c.len = (b.duration - (c.offset || 0)) / E.spb / (c.rate || 1); commit(false); };
+  $('#aFit').onclick = () => { if (!b) return; snapshot(); c.len = (b.duration - (c.offset || 0)) / E.spb / clipRate(c, P().bpm); commit(false); };
   const live = (id, key, fmt2) => { $(id).onpointerdown = () => snapshot(); $(id).oninput = e => { c[key] = +e.target.value; e.target.nextElementSibling.textContent = fmt2(c[key]); renderLanes(); }; $(id).onchange = () => persist(); };
   live('#aFi', 'fadeIn', v => v.toFixed(2) + ' beats'); live('#aFo', 'fadeOut', v => v.toFixed(2) + ' beats');
-  $('#aRate').onpointerdown = () => snapshot(); $('#aRate').oninput = e => { c.rate = Math.pow(2, +e.target.value / 12); e.target.nextElementSibling.textContent = e.target.value + ' st'; renderLanes(); }; $('#aRate').onchange = () => persist();
+  if ($('#aRate')) { $('#aRate').onpointerdown = () => snapshot(); $('#aRate').oninput = e => { c.rate = Math.pow(2, +e.target.value / 12); e.target.nextElementSibling.textContent = e.target.value + ' st'; renderLanes(); }; $('#aRate').onchange = () => persist(); }
+  live('#aFine', 'fine', v => v + ' ¢');
+  if ($('#aWarp')) $('#aWarp').onclick = () => {   // keep sounding exactly the same, but as a fixed-speed clip
+    snapshot(); const rate = P().bpm / c.bpm, tot = (c.pitch || 0) + (c.fine || 0) / 100 - (c.keepPitch !== false ? 12 * Math.log2(rate) : 0);
+    c.rate = rate; c.pitch = Math.trunc(tot); c.fine = Math.round((tot - c.pitch) * 100); delete c.bpm; commit(false); toast('Loop unlocked — it keeps this speed');
+  };
   $('#aTh').oninput = e => { UI.stripTh = +e.target.value; e.target.nextElementSibling.textContent = e.target.value + ' dB'; };
   $('#aNorm').onclick = () => { if (!b) return; const pk = regionPeak(b, c); if (pk <= 0) return toast('This clip is silent'); snapshot(); c.gain = +(-20 * Math.log10(pk) - 0.3).toFixed(1); commit(false); toast(`Clip gain set to ${c.gain > 0 ? '+' : ''}${c.gain} dB`); };
   $('#aRev').onclick = async () => {
     if (!b) return; const nb = new AudioBuffer({ length: b.length, numberOfChannels: b.numberOfChannels, sampleRate: b.sampleRate });
     for (let ch = 0; ch < b.numberOfChannels; ch++) { const d = b.getChannelData(ch).slice().reverse(); nb.copyToChannel(d, ch); }
     const id = await E.addAudio(await encodeWav(nb).arrayBuffer(), audioName(c.sample) + ' (reversed)'); if (!id) return; snapshot();
-    P().audio[id] = { name: audioName(c.sample) + ' (reversed)' }; const used = c.len * E.spb * (c.rate || 1); c.offset = Math.max(0, b.duration - (c.offset || 0) - used); c.sample = id; await commit(false); toast('Reversed');
+    P().audio[id] = { name: audioName(c.sample) + ' (reversed)' }; const used = c.len * E.spb * clipRate(c, P().bpm); c.offset = Math.max(0, b.duration - (c.offset || 0) - used); c.sample = id; await commit(false); toast('Reversed');
   };
   $('#aStrip').onclick = async () => {
-    if (!b) return; const th = Math.pow(10, (UI.stripTh || -40) / 20), rate = c.rate || 1, sr = b.sampleRate, win = Math.floor(sr * 0.01);
+    if (!b) return; const th = Math.pow(10, (UI.stripTh || -40) / 20), rate = clipRate(c, P().bpm), sr = b.sampleRate, win = Math.floor(sr * 0.01);
     const s0 = Math.floor((c.offset || 0) * sr), s1 = Math.min(b.length, s0 + Math.floor(c.len * E.spb * rate * sr)), chans = [...Array(b.numberOfChannels)].map((_, i) => b.getChannelData(i));
     const loud = []; for (let i = s0; i < s1; i += win) { let m = 0; for (const d of chans) for (let j = i; j < Math.min(s1, i + win); j++) m = Math.max(m, Math.abs(d[j])); loud.push(m >= th); }
     const regs = []; let st = -1, gap = 0; const minGap = 10, pad = 1;   // windows of 10 ms: merge gaps under 100 ms
@@ -595,7 +626,7 @@ function renderDevices() {
   }
   o.inserts.forEach((s, i) => {
     const def = s.type === 'wam' ? { name: 'Web plugin', params: [] } : EFFECTS[s.type];
-    h += `<div class="dev ${s.bypass ? 'off' : ''}" data-slot="${s.id}"><h4><span class="t" title="${esc(s.url || '')}">${esc(def?.name || s.type)}</span><button data-a="float" title="Open in a floating window that stays on top">Float</button><button data-a="byp" title="Bypass">${s.bypass ? 'Off' : 'On'}</button><button data-a="l" title="Move left" ${i ? '' : 'disabled'}>‹</button><button data-a="r" title="Move right" ${i < o.inserts.length - 1 ? '' : 'disabled'}>›</button><button data-a="x" title="Remove">×</button></h4>`;
+    h += `<div class="dev ${s.bypass ? 'off' : ''}" data-slot="${s.id}"><h4 draggable="true" title="Drag to reorder, or onto a mixer channel to move it (Alt to copy)"><span class="t" title="${esc(s.url || '')}">${esc(def?.name || s.type)}</span><button data-a="float" title="Open in a floating window that stays on top">Float</button><button data-a="byp" title="Bypass">${s.bypass ? 'Off' : 'On'}</button><button data-a="l" title="Move left" ${i ? '' : 'disabled'}>‹</button><button data-a="r" title="Move right" ${i < o.inserts.length - 1 ? '' : 'disabled'}>›</button><button data-a="x" title="Remove">×</button></h4>`;
     if (s.type === 'eq') h += `<canvas class="eqc" data-eq="${s.id}"></canvas>`;
     if (s.type === 'analyzer') h += `<canvas class="eqc" data-an="${s.id}" style="height:140px"></canvas>`;
     if (s.type === 'tune') h += `<div class="tunerd"><b data-tune="${s.id}">–</b><span>input pitch, live</span></div>`;
@@ -804,7 +835,7 @@ async function splitAt(fc, b) {
   const cut = b - c.start, d = JSON.parse(JSON.stringify(c)); d.id = uid(); d.start = b; d.len = c.len - cut; c.len = cut;
   if (isMidi(c)) { d.notes = c.notes.filter(n => n.s >= cut).map(n => ({ ...n, s: n.s - cut })); c.notes = c.notes.filter(n => n.s < cut).map(n => ({ ...n, l: Math.min(n.l, cut - n.s) })); }
   else {
-    const L = c.loopLen && c.loopLen < c.len + cut ? c.loopLen : null, rate = c.rate || 1;
+    const L = c.loopLen && c.loopLen < c.len + cut ? c.loopLen : null, rate = clipRate(c, P().bpm);
     d.offset = (c.offset || 0) + (L ? cut % L : cut) * E.spb * rate;
     if (L) { delete d.loopLen; delete c.loopLen; if (c.len > L) { c.loopLen = L; } d.len = Math.min(d.len, L - (cut % L)); }
     c.fadeOut = 0; d.fadeIn = 0;
@@ -845,6 +876,9 @@ function clipMenu(fc, anchorEvent) {
     { icon: '✂', label: 'Cut', key: 'Ctrl+X', run: () => copyClip(true) },
     { icon: '⧉', label: 'Copy', key: 'Ctrl+C', run: () => copyClip(false) },
     { icon: '▤', label: 'Paste at playhead', key: 'Ctrl+V', disabled: !UI.clipboard, run: pasteClip },
+    { icon: '♯', label: 'Pitch up', key: 'Alt+↑', run: () => pitchClips([fc.ref || fc.c], 1) },
+    { icon: '♭', label: 'Pitch down', key: 'Alt+↓', run: () => pitchClips([fc.ref || fc.c], -1) },
+    { icon: '⇅', label: 'Up an octave', key: 'Alt+Shift+↑', run: () => pitchClips([fc.ref || fc.c], 12) },
     { icon: '⇥', label: 'Duplicate', key: 'Ctrl+D', run: duplicateClip },
     { icon: '⫶', label: 'Split at playhead', key: 'B', run: splitClip },
     { icon: '↻', label: fc.c.loopLen ? 'Loop clip: on → off' : 'Loop clip', sub: 'Repeat its content as you stretch it', disabled: !!fc.c.pattern, run: toggleClipLoop },
@@ -860,7 +894,7 @@ function setTool(t) { UI.tool = t; $('#tSel').classList.toggle('on', t === 'sele
 $('#tSel').onclick = () => setTool('select'); $('#tSplit').onclick = () => setTool('split');
 
 // ---------- install, download, about ----------
-export const VERSION = '1.2.0';
+export const VERSION = '1.3.0';
 let installEvt = null;
 addEventListener('beforeinstallprompt', e => { e.preventDefault(); installEvt = e; });
 addEventListener('appinstalled', () => toast('Rose is installed — open it from your Dock, Launchpad or Start menu'));
@@ -945,6 +979,7 @@ function renderLib() {
   const t = trk(UI.track);
   const onT = t && t.kind === 'inst' ? esc(t.name) : 'an instrument track';
   $('#lib').innerHTML = `<h5>Templates</h5><div class="chips2"><button data-tplopen="1" class="wide" title="EDM, pop, trap, R&B, simcha, orchestral, podcast…">New song from a template</button></div>
+    <h5>Loops <span class="h5n">${LOOPS ? LOOPS.length + ' free · CC0' : ''}</span></h5>${loopsHtml()}
     <h5>Real instruments</h5><div class="chips2">${SOUND_LIB.map(x => `<button data-sound="${esc(x.name)}" title="${x.cat} — sampled, open source">${esc(x.name)}</button>`).join('')}</div>
     <h5>Synth presets</h5><div class="chips2">${Object.keys(SYNTH_PRESETS).map(n => `<button data-preset="${esc(n)}" title="${PRESET_INFO[n] || ''}">${esc(n)}</button>`).join('')}
     <button data-addk="drums" title="Step-sequencer beat">Drum kit</button><button data-addk="sampler" title="Play any sound across the keyboard">Sampler</button><button data-addk="external" class="wide" title="Play SHRUB, an FM-1 or hardware">External MIDI</button></div>
@@ -953,7 +988,129 @@ function renderLib() {
     <h5>Vocal tools${t ? ' → ' + esc(t.name) : ''}</h5><div class="chips2"><button data-chain="vocal" class="wide" title="Rose Tune → EQ → De-esser → Compressor, plus reverb send">Vocal chain (one click)</button>${['tune', 'deesser', 'harmonizer', 'doubler', 'pitch'].map(k => `<button data-fx="${k}" title="${FX_INFO[k]}">${esc(EFFECTS[k].name)}</button>`).join('')}</div>
     <h5>Effects${t ? ' → ' + esc(t.name) : ''}</h5><div class="chips2">${Object.entries(EFFECTS).filter(([, d]) => d.cat !== 'Vocal').map(([k, d]) => `<button data-fx="${k}" title="${FX_INFO[k] || d.cat}">${esc(d.name.replace(/^(Parametric|Sidechain|Spectrum|Stereo|Tremolo \/) ?/, m => m === 'Parametric ' ? '' : m))}</button>`).join('')}</div>
     <h5>Mixing</h5><div class="chips2"><button data-addk="group" class="wide" title="Mix several tracks together">Group bus</button></div>`;
+  $('#lib').querySelectorAll('[data-fx],[data-chain]').forEach(b => { b.draggable = true; b.title = (b.title ? b.title + ' — ' : '') + 'click to add, or drag onto a mixer channel, track or the device rack'; });
+  bindLoops();
 }
+
+// ---------- loop library (CC0 loops from the Stargate DAW sample pack and Sonic Pi) ----------
+let LOOPS = null, preview = null;
+const KEY12 = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+async function loopLib() { if (!LOOPS) try { LOOPS = (await (await fetch('loops/index.json')).json()).loops; } catch { LOOPS = []; } return LOOPS; }
+const loopShift = L => { if (!UI.loopKey || !L.key) return 0; let d = (KEY12.indexOf(UI.loopKey) - KEY12.indexOf(L.key) + 12) % 12; return d > 6 ? d - 12 : d; };
+function loopRows() {
+  const q = (UI.loopQ || '').toLowerCase(), cat = UI.loopCat || '';
+  const list = (LOOPS || []).filter(L => (!cat || L.cat === cat) && (!q || (L.name + ' ' + L.cat + ' ' + (L.bpm || '') + ' ' + (L.key || '')).toLowerCase().includes(q)));
+  if (!LOOPS) return '<p class="small">Loading loops…</p>'; if (!list.length) return '<p class="small">No loops match.</p>';
+  return list.map(L => `<div class="loop ${preview?.id === L.id ? 'on' : ''}" draggable="true" data-loop="${L.id}" title="Drag into the arrangement — it follows the song tempo"><button data-lp="${L.id}" aria-label="Preview ${esc(L.name)}">${preview?.id === L.id ? '■' : '▶'}</button><span class="ln">${esc(L.name.replace(/^(Drums|Bass|Chords|Guitar|Melody|Ambience) · /, ''))}</span><span class="lm">${L.cat}${L.bpm ? ' · ' + Math.round(L.bpm) : ''}${L.key ? ' · ' + (loopShift(L) ? UI.loopKey : L.key) : ''}</span><button data-loopadd="${L.id}" aria-label="Add ${esc(L.name)} at the playhead" title="Add at the playhead">+</button></div>`).join('');
+}
+function loopsHtml() {
+  const cats = [...new Set((LOOPS || []).map(L => L.cat))];
+  return `<div class="loopbar"><input id="loopQ" type="search" placeholder="Search loops" value="${esc(UI.loopQ || '')}" aria-label="Search loops">
+    <select id="loopCat" aria-label="Loop type"><option value="">All types</option>${cats.map(c => `<option ${UI.loopCat === c ? 'selected' : ''}>${c}</option>`).join('')}</select>
+    <select id="loopKey" aria-label="Play loops in key" title="Pitch every melodic loop into this key (speed stays the same)"><option value="">Original key</option>${KEY12.map(k => `<option ${UI.loopKey === k ? 'selected' : ''}>${k}</option>`).join('')}</select></div>
+    <div class="loops" id="loopList">${loopRows()}</div>`;
+}
+function bindLoops() {
+  const box = $('#loopList'); if (!box) return;
+  $('#loopQ').oninput = e => { UI.loopQ = e.target.value; box.innerHTML = loopRows(); };
+  $('#loopCat').onchange = e => { UI.loopCat = e.target.value; box.innerHTML = loopRows(); };
+  $('#loopKey').onchange = e => { UI.loopKey = e.target.value; box.innerHTML = loopRows(); if (preview) { const id = preview.id; stopPreview(); previewLoop(id); } };
+  box.onclick = e => {
+    const pb = e.target.closest('[data-lp]'), ab = e.target.closest('[data-loopadd]');
+    if (pb) { preview?.id === pb.dataset.lp ? stopPreview() : previewLoop(pb.dataset.lp); }
+    else if (ab) { const t = trk(UI.track); placeLoop(LOOPS.find(L => L.id === ab.dataset.loopadd), t?.kind === 'audio' ? t.id : null, P().cursor || 0); }
+  };
+  box.ondblclick = e => { const r = e.target.closest('[data-loop]'); if (r && !e.target.closest('button')) placeLoop(LOOPS.find(L => L.id === r.dataset.loop), null, P().cursor || 0); };
+  box.ondragstart = e => { const r = e.target.closest('[data-loop]'); if (!r) return; e.dataTransfer.setData('application/x-rose-loop', r.dataset.loop); e.dataTransfer.effectAllowed = 'copy'; DRAG.kind = 'loop'; };
+  box.ondragend = () => dragEnd();
+}
+const loopBuffers = new Map();
+async function loopBuffer(L) {
+  if (!loopBuffers.has(L.id)) loopBuffers.set(L.id, fetch(`loops/${L.id}.mp3`).then(r => r.arrayBuffer()).then(ab => E.ctx.decodeAudioData(ab)).catch(() => (loopBuffers.delete(L.id), null)));
+  return loopBuffers.get(L.id);
+}
+function stopPreview() { if (!preview) return; try { preview.src.stop(); } catch { } preview.nodes.forEach(n => n.disconnect()); preview = null; const b = $('#loopList'); if (b) b.innerHTML = loopRows(); }
+async function previewLoop(id) {
+  stopPreview(); await E.start(); const L = LOOPS.find(x => x.id === id), buf = await loopBuffer(L); if (!buf) return toast('Couldn’t load that loop');
+  // audition at the song tempo and chosen key, like it will sound in the song
+  const ctx = E.ctx, src = ctx.createBufferSource(), g = ctx.createGain(), rate = L.bpm ? P().bpm / L.bpm : 1, semis = loopShift(L) - (L.bpm ? 12 * Math.log2(rate) : 0), pw = Math.abs(semis) > 0.004 ? worklet(ctx, 'rose-pitch') : null;
+  src.buffer = buf; src.loop = true; if (L.beats && L.bpm) { src.loopEnd = Math.min(buf.duration, L.beats * 60 / L.bpm); } src.playbackRate.value = rate; g.gain.value = 0.8;
+  if (pw) { pw.parameters.get('mode').value = 1; pw.parameters.get('shift').value = Math.trunc(semis); pw.parameters.get('detune').value = (semis - Math.trunc(semis)) * 100; src.connect(pw).connect(g); } else src.connect(g);
+  g.connect(ctx.destination); src.start(); preview = { id, src, nodes: [src, g, pw].filter(Boolean) }; const b = $('#loopList'); if (b) b.innerHTML = loopRows();
+}
+async function placeLoop(L, trackId, beat, newTrackAt) {
+  if (!L) return; stopPreview(); toast(`Adding ${L.name}…`);
+  let id = Object.entries(P().audio || {}).find(([k, a]) => a.loop === L.id && E.buffers.get(k))?.[0];
+  if (!id) { const ab = await (await fetch(`loops/${L.id}.mp3`)).arrayBuffer(); id = await E.addAudio(ab, L.name); if (!id) return toast('Couldn’t add that loop'); }
+  snapshot(); P().audio[id] = { name: L.name, loop: L.id };
+  const len0 = L.bpm && L.beats ? L.beats : E.buffers.get(id).duration / E.spb, b0 = snapB(beat);
+  let t = trackId && trk(trackId)?.kind === 'audio' ? trk(trackId) : null;
+  if (t && t.clips.some(c => c.start < b0 + len0 - 1e-6 && c.start + c.len > b0 + 1e-6)) t = null;   // never stack on top of another clip
+  if (!t) { t = newTrack('audio', null, P().tracks.filter(x => x.kind === 'audio').length + 1); t.name = (L.cat === 'Drums' || L.cat === 'Percussion' ? L.name.replace(/ · .*/, '') : L.name).slice(0, 24); P().tracks.splice(newTrackAt ?? P().tracks.length, 0, t); }
+  const c = { id: uid(), name: L.name, start: snapB(beat), sample: id, offset: 0, gain: 0 };
+  if (L.bpm && L.beats) { c.bpm = L.bpm; c.len = L.beats; c.loopLen = L.beats; } else c.len = E.buffers.get(id).duration / E.spb;
+  const sh = loopShift(L); if (sh) c.pitch = sh;
+  t.clips.push(c); UI.track = t.id; UI.clip = c.id; await commit(true);
+  toast(`${L.name} added${c.bpm ? ` — stretched to ${P().bpm} BPM` : ''}${sh ? `, pitched to ${UI.loopKey}` : ''}. Drag its right edge to repeat it`);
+}
+loopLib().then(() => { if (UI.lib && $('#lib').innerHTML) renderLib(); });
+
+// ---------- drag and drop: effects onto the mixer, tracks and rack; loops into the arrangement ----------
+const DRAG = { kind: null };
+function dragEnd() { DRAG.kind = null; document.querySelectorAll('.dropok,.dropbefore,.dropafter').forEach(el => el.classList.remove('dropok', 'dropbefore', 'dropafter')); }
+$('#lib').addEventListener('dragstart', e => {
+  const b = e.target.closest('[data-fx],[data-chain]'); if (!b) return;
+  e.dataTransfer.setData('application/x-rose-fx', b.dataset.fx || 'chain:vocal'); e.dataTransfer.effectAllowed = 'copy'; DRAG.kind = 'fx';
+});
+$('#lib').addEventListener('dragend', dragEnd);
+const fxTarget = el => {   // which channel an effect would land on
+  const ch = el.closest('.ch'); if (ch) return ch.dataset.kind === 'master' ? { kind: 'master', o: P().master, el: ch } : ch.dataset.kind === 'return' ? { kind: 'return', o: P().returns.find(r => r.id === ch.dataset.id), el: ch } : { kind: 'track', o: trk(ch.dataset.id), el: ch };
+  const th = el.closest('.th'); if (th) return { kind: 'track', o: trk(th.dataset.id), el: th };
+  const lane = el.closest('.lane'); if (lane && lane.dataset.id) return { kind: 'track', o: trk(lane.dataset.id), el: lane };
+  const rack = el.closest('#devices'); if (rack) { const d = UI.dev; const o = d.kind === 'master' ? P().master : d.kind === 'return' ? P().returns.find(r => r.id === d.id) : trk(d.id); return o && { kind: d.kind, o, el: rack, rack: true }; }
+  return null;
+};
+function rackIndex(e, o) {   // insert position from the card under the pointer
+  const cards = [...document.querySelectorAll('#devices .dev[data-slot]')]; document.querySelectorAll('.dropbefore,.dropafter').forEach(x => x.classList.remove('dropbefore', 'dropafter'));
+  for (const c of cards) { const r = c.getBoundingClientRect(); if (e.clientY < r.bottom && e.clientX < r.right && e.clientY > r.top - 4) { const before = e.clientX < r.left + r.width / 2; c.classList.add(before ? 'dropbefore' : 'dropafter'); const i = o.inserts.findIndex(s => s.id === c.dataset.slot); return before ? i : i + 1; } }
+  return o.inserts.length;
+}
+const fxTypes = e => [...e.dataTransfer.types];
+document.addEventListener('dragover', e => {
+  const ty = fxTypes(e), isFx = ty.includes('application/x-rose-fx'), isSlot = ty.includes('application/x-rose-slot'), isLoop = ty.includes('application/x-rose-loop');
+  if (!isFx && !isSlot && !isLoop) return;
+  document.querySelectorAll('.dropok').forEach(x => x.classList.remove('dropok'));
+  if (isLoop) { const lw = e.target.closest('#lanesWrap'); if (!lw) return; e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; const r = $('#lanes').getBoundingClientRect(), lane = document.querySelectorAll('#lanes .lane')[Math.floor((e.clientY - r.top) / LANE)]; (lane || lw).classList.add('dropok'); return; }
+  const tg = fxTarget(e.target); if (!tg || !tg.o || tg.o.kind === 'group' && false) return;
+  e.preventDefault(); e.dataTransfer.dropEffect = isSlot && !e.altKey ? 'move' : 'copy'; tg.el.classList.add('dropok'); if (tg.rack) rackIndex(e, tg.o);
+});
+document.addEventListener('drop', async e => {
+  const ty = fxTypes(e), fx = e.dataTransfer.getData('application/x-rose-fx'), slotId = e.dataTransfer.getData('application/x-rose-slot'), loopId = e.dataTransfer.getData('application/x-rose-loop');
+  if (!fx && !slotId && !loopId) return; e.preventDefault(); e.stopPropagation();
+  if (loopId) {
+    dragEnd(); if (UI.view === 'session') return toast('Switch to the Arrangement to drop loops'); const r = $('#lanes').getBoundingClientRect(), i = Math.floor((e.clientY - r.top) / LANE), lane = P().tracks[i];
+    return placeLoop(LOOPS.find(L => L.id === loopId), lane?.id, Math.max(0, Math.floor((e.clientX - r.left) / UI.ppb / P().sig) * P().sig), lane ? i + 1 : undefined);
+  }
+  const tg = fxTarget(e.target); const at = tg?.rack ? rackIndex(e, tg.o) : null; dragEnd(); if (!tg?.o) return;
+  snapshot(); const o = tg.o, where = tg.kind === 'master' ? 'Master' : o.name;
+  if (fx === 'chain:vocal') {
+    const add = (type, params) => { if (!o.inserts.some(s => s.type === type)) o.inserts.push({ id: uid(), type, params, bypass: false }); };
+    add('tune', { key: 'C', scale: 'Major', speed: 20 }); add('eq', { hp: 90, m1f: 300, m1g: -2, hsg: 2.5 }); add('deesser', { threshold: -32 }); add('comp', { threshold: -22, ratio: 3.5, attack: 0.006, release: 0.12, makeup: 4 });
+    if (o.sends) o.sends.A = Math.max(o.sends.A || 0, 0.25); toast(`Vocal chain added to ${where}`);
+  } else if (fx) { o.inserts.splice(at ?? o.inserts.length, 0, { id: uid(), type: fx, params: {}, bypass: false }); toast(`${EFFECTS[fx].name} added to ${where}`); }
+  else {   // a device dragged out of the rack: reorder, or move (Alt/Option = copy) to another channel
+    const from = DRAG.from, src = from && (from.kind === 'master' ? P().master : from.kind === 'return' ? P().returns.find(r => r.id === from.id) : trk(from.id)); if (!src) return;
+    const i = src.inserts.findIndex(s => s.id === slotId); if (i < 0) return; const slot = src.inserts[i];
+    if (e.altKey) { const cp = JSON.parse(JSON.stringify(slot)); cp.id = uid(); o.inserts.splice(at ?? o.inserts.length, 0, cp); toast(`${EFFECTS[slot.type]?.name || 'Plugin'} copied to ${where}`); }
+    else { src.inserts.splice(i, 1); let j = at ?? o.inserts.length; if (src === o && j > i) j--; o.inserts.splice(j, 0, slot); if (src !== o) { (o.auto || []).length; toast(`${EFFECTS[slot.type]?.name || 'Plugin'} moved to ${where} — hold Alt to copy instead`); } }
+  }
+  UI.dev = tg.kind === 'master' ? { kind: 'master' } : { kind: tg.kind, id: o.id }; await commit(true);
+}, true);
+document.addEventListener('dragstart', e => {   // drag a device card by its title bar
+  const card = e.target.closest?.('#devices .dev[data-slot]'); if (!card) return;
+  e.dataTransfer.setData('application/x-rose-slot', card.dataset.slot); e.dataTransfer.effectAllowed = 'copyMove'; DRAG.kind = 'slot'; DRAG.from = { ...UI.dev };
+});
+document.addEventListener('dragend', dragEnd);
 $('#lib').addEventListener('click', async e => {
   const b = e.target.closest('button'); if (!b) return; const t = trk(UI.track);
   if (b.dataset.preset) {
@@ -1033,6 +1190,9 @@ addEventListener('keydown', e => {
   if (mod) return;
   if (e.code === 'Space') { e.preventDefault(); E.playing ? E.stop(true) : E.play(); return; }
   if (e.key === 'Enter') { E.stop(); return; }
+  if ((e.key === 'ArrowUp' || e.key === 'ArrowDown') && e.altKey && UI.clip) {   // pitch the selected clip(s)
+    const fc = findClip(UI.clip); if (fc) { e.preventDefault(); pitchClips([fc.ref || fc.c], (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 12 : 1)); return; }
+  }
   if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && UI.clip) {
     const fc = findClip(UI.clip); if (fc && fc.slot == null) { e.preventDefault(); const step = e.altKey ? 1 / 64 : (UI.snap || 0.25), d = e.key === 'ArrowLeft' ? -step : step;
       if (!e.repeat) snapshot(); fc.c.start = Math.max(0, +(fc.c.start + d).toFixed(5)); renderLanes(); persist(); toastQuiet(`Nudged to beat ${(fc.c.start + 1).toFixed(3)}`); return; }

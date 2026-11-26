@@ -1,6 +1,6 @@
 // Rose — audio engine: project model, mixer graph (tracks, groups, returns, sidechains), transport/scheduler,
 // arrangement + patterns + session clips, automation, recording, MIDI, web plugins, WAV export, bounce-in-place.
-import { createEffect, prepareWorklets, setAt, EFFECTS } from './effects.js';
+import { createEffect, prepareWorklets, setAt, EFFECTS, worklet } from './effects.js';
 import { createInstrument, instDefaults, applyMidiFx, chordOf, arpOrder, ARP_RATES, SYNTH_PRESETS } from './instruments.js';
 
 export const db = v => v <= -60 ? 0 : Math.pow(10, v / 20);
@@ -42,6 +42,12 @@ export function newProject() {
     master: { vol: -1, inserts: [{ id: uid(), type: 'limiter', params: { ceiling: -0.3 }, bypass: false }] }
   };
 }
+// Audio clip speed. Loops dropped from the library carry their source tempo (c.bpm) and follow the song tempo.
+export const clipRate = (c, bpm) => c.bpm ? bpm / c.bpm : (c.rate || 1);
+// Total pitch change in semitones: clip pitch + track transpose, minus the repitch a tempo-following loop would get.
+export const clipSemis = (c, t, bpm) => (c.pitch || 0) + (c.fine || 0) / 100 + (t?.transpose || 0) - (c.bpm && c.keepPitch !== false ? 12 * Math.log2(bpm / c.bpm) : 0);
+export const midiShift = (c, t) => t?.inst === 'drums' ? 0 : (c.transpose || 0) + (t?.transpose || 0);   // a drum kit maps notes to sounds, so it never transposes
+
 // Song templates (templates/templates.json, shared with the desktop app) become a normal project.
 export function projectFromTemplate(tp) {
   const p = blankProject(); const slot = f => ({ id: uid(), type: f.type, params: { ...f.params }, bypass: false });
@@ -268,13 +274,13 @@ export class Engine {
     const playClip = (s, c, cStart, cEnd, t) => {
       if (cEnd <= b0 || cStart >= b1) return;
       if (isMidi(c)) {
-        if (!s.inst) return; const L = Math.max(0.0625, this.loopLen(c, p)), notes = applyMidiFx(t.midifx, this.notesOf(c, p), L);
+        if (!s.inst) return; const L = Math.max(0.0625, this.loopLen(c, p)), notes = applyMidiFx(t.midifx, this.notesOf(c, p), L), tp = midiShift(c, t);
         const k0 = Math.max(0, Math.floor((b0 - cStart) / L) - 1), k1 = Math.floor((b1 - cStart) / L);
         for (let k = k0; k <= k1; k++) {
           const base = cStart + k * L;
           for (const n of notes) {
             if (n.s >= L) continue; const nb = base + n.s;
-            if (nb >= b0 && nb < b1 && nb >= cStart && nb < cEnd) { const end = Math.min(nb + n.l, base + L, cEnd); s.inst.noteOn(n.p, n.v, T(nb)); s.inst.noteOff(n.p, T(end)); }
+            if (nb >= b0 && nb < b1 && nb >= cStart && nb < cEnd) { const end = Math.min(nb + n.l, base + L, cEnd); const q = Math.max(0, Math.min(127, n.p + tp)); s.inst.noteOn(q, n.v, T(nb)); s.inst.noteOff(q, T(end)); }
           }
         }
       } else {
@@ -282,16 +288,24 @@ export class Engine {
         const L = Math.max(0.0625, c.loopLen || c.len), loops = cEnd - cStart > L + 1e-6;   // looped clips and session clips repeat
         const k0 = loops ? Math.max(0, Math.floor((b0 - cStart) / L)) : 0, k1 = loops ? Math.floor((b1 - cStart) / L) : 0;
         for (let k = k0; k <= k1; k++) {
-          const os = cStart + k * L, oe = Math.min(os + L, cEnd), rate = c.rate || 1; let startB = null, off = c.offset || 0;
+          const os = cStart + k * L, oe = Math.min(os + L, cEnd), rate = clipRate(c, p.bpm); let startB = null, off = c.offset || 0;
           if (os >= b0 && os < b1) startB = os; else if (first && os < b0 && oe > b0) { startB = b0; off += (b0 - os) * spb * rate; }
           if (startB == null) continue;
           const src = ctx.createBufferSource(), gn = ctx.createGain(), g0 = db(c.gain || 0); src.buffer = buf; src.playbackRate.value = rate;
-          src.connect(gn).connect(s.input); const dur = (oe - startB) * spb, when = Math.max(T(startB), ctx.currentTime), endT = T(oe);
+          // independent pitch: the pitch engine (same as Rose Tune) shifts without changing speed; it adds ~20 ms latency, so start that much early
+          const semis = clipSemis(c, t, p.bpm), pw = Math.abs(semis) > 0.004 ? worklet(ctx, 'rose-pitch') : null; let lat = 0;
+          if (pw) { pw.parameters.get('mode').value = 1; pw.parameters.get('shift').value = Math.trunc(semis); pw.parameters.get('detune').value = (semis - Math.trunc(semis)) * 100; src.connect(pw).connect(gn); lat = 0.02; }
+          else src.connect(gn);
+          gn.connect(s.input); const dur = (oe - startB) * spb, when = Math.max(T(startB), ctx.currentTime), endT = T(oe);
           // clip fades (Pro Tools style)
           const fi = (c.fadeIn || 0) * spb, fo = (c.fadeOut || 0) * spb, into = (startB - os) * spb;
           if (fi > 0 && into < fi) { gn.gain.setValueAtTime(g0 * into / fi, when); gn.gain.linearRampToValueAtTime(g0, when + fi - into); } else gn.gain.setValueAtTime(g0, when);
           if (fo > 0) { const fs = Math.max(when, endT - fo); gn.gain.setValueAtTime(g0, fs); gn.gain.linearRampToValueAtTime(0, endT); }
-          if (off < buf.duration) { src.start(when, off, Math.max(0.001, Math.min(dur * rate, buf.duration - off))); out.push(src); src.onended = () => { const i = out.indexOf(src); if (i >= 0) out.splice(i, 1); }; }
+          if (off < buf.duration) {
+            const w0 = Math.max(ctx.currentTime, when - lat), early = when - w0;
+            src.start(w0, off, Math.max(0.001, Math.min(dur * rate + early * rate, buf.duration - off))); out.push(src);
+            src.onended = () => { const i = out.indexOf(src); if (i >= 0) out.splice(i, 1); if (pw) setTimeout(() => pw.disconnect(), 200); };
+          }
         }
       }
     };
@@ -318,7 +332,7 @@ export class Engine {
   // ---------- live playing (MIDI keyboard / computer keys) ----------
   liveOn(trackId, p, v = 0.8) {
     const s = this.g?.tracks.get(trackId); if (!s?.inst) return; const t = this.p.tracks.find(x => x.id === trackId), mf = t?.midifx;
-    const ps = mf?.chord?.on ? chordOf(p, mf.chord) : [p];
+    const sp = p + (t?.transpose || 0), ps = mf?.chord?.on ? chordOf(sp, mf.chord) : [sp];   // track transpose sounds, but recordings keep what was played
     if (mf?.arp?.on) { const st = (this.arpHeld ||= {})[trackId] ||= { held: new Map(), step: 0, next: null, v }; ps.forEach(q => st.held.set(q, p)); st.v = v; this.arpStart(trackId); }
     else ps.forEach((q, i) => s.inst.noteOn(q, v, this.ctx.currentTime + i * (mf?.chord?.strum || 0) * this.spb));
     if (this.recording && this.p.tracks.find(t => t.id === trackId)?.arm) this.liveNotes.set(p, { p, s: this.position(), v, track: trackId });
@@ -326,7 +340,7 @@ export class Engine {
   liveOff(trackId, p) {
     const s = this.g?.tracks.get(trackId), t = this.p.tracks.find(x => x.id === trackId), mf = t?.midifx, st = this.arpHeld?.[trackId];
     if (st) for (const [q, src] of [...st.held]) if (src === p) st.held.delete(q);
-    (mf?.chord?.on ? chordOf(p, mf.chord) : [p]).forEach(q => s?.inst?.noteOff(q, this.ctx.currentTime));
+    const sp = p + (t?.transpose || 0); (mf?.chord?.on ? chordOf(sp, mf.chord) : [sp]).forEach(q => s?.inst?.noteOff(q, this.ctx.currentTime));
     const n = this.liveNotes.get(p); if (n) { this.liveNotes.delete(p); n.l = Math.max(0.05, this.position() - n.s); this.recNotes.push(n); }
   }
 

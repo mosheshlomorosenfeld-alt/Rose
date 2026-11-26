@@ -20,6 +20,9 @@ A DAW by Rosenfeld Productions, in two versions:
 - **Arrangement**: audio and instrument tracks, drag/resize/move clips between tracks, snap, zoom, loop region, split (Ctrl+E), duplicate (Ctrl+D), undo/redo
 - **Recording**: microphone/interface audio with latency compensation; MIDI from a keyboard or the computer keys (A–; with Z/X for octave)
 - **Editors**: piano roll (draw, move, resize, quantize, transpose) and a 16-step drum sequencer; audio clip gain and trim
+- **Loops**: 47 free CC0 loops (drums, percussion, bass, chords, guitar, melody, ambience, FX) — search, preview at song tempo, drag into the arrangement; they follow tempo changes and can be pitched into any key
+- **Pitch anything**: clip pitch for audio (speed unchanged) and MIDI (Alt+↑/↓, Alt+Shift for octaves), fine-tune in cents, and whole-track transpose
+- **Drag and drop effects** from the Library onto mixer channels, track headers or the device rack; drag devices to reorder or move them (Alt/Option to copy)
 - **Templates**: EDM / Rave, Pop vocal, Hip-hop / Trap, R&B / Smooth, Simcha / Wedding (D Freygish), Singer-songwriter, Orchestral / Film, Podcast — the same `templates/templates.json` drives the web app and the desktop app
 - **Instruments**: **Rose Sounds** — 14 sampled real instruments (Grand Piano, Electric Piano, Organ, Marimba, Nylon Guitar, Electric Bass, Strings, Pizzicato, Violin, Brass Section, Trumpet, Flute, Clarinet, Choir), Rose Synth (supersaw unison, filter env, 8 presets), Rose Drums (11 synthesized sounds), Rose Sampler, **External MIDI** (play SHRUB's browser editor, an FM-1 or any hardware synth)
 - **Vocal tools**: **Rose Tune** pitch correction (key, scale incl. Freygish/Ahava Raba, retune speed from robotic to natural, humanize, live pitch readout), De-esser, Harmonizer (two voices), Vocal Doubler, Pitch Shifter, and a one-click vocal chain
@@ -40,4 +43,6 @@ See `native/README.md` for building the desktop app.
 Install any of these, then press **Plugins…** in Rose Studio desktop to scan: [Surge XT](https://surge-synthesizer.github.io/), [Vital](https://vital.audio/), [Dexed](https://asb2m10.github.io/dexed/), [OB-Xd](https://github.com/reales/OB-Xd), [Odin 2](https://thewavewarden.com/odin2), [Helm](https://tytel.org/helm/). They're linked, not bundled, because their GPL licences don't allow shipping them inside Rose.
 
 ## Credits
+Loops: CC0 from the [Stargate DAW sample pack](https://github.com/stargatedaw/stargate-sample-pack) (microlag, Fugue State Audio) and [Sonic Pi](https://github.com/sonic-pi-net/sonic-pi) — see `loops/CREDITS.md`.
+
 Rose Sounds uses the **FluidR3 GM SoundFont** by Frank Wen (MIT licence), as rendered by [midi-js-soundfonts](https://github.com/gleitz/midi-js-soundfonts) (CC BY 3.0). See `sounds/CREDITS.md`.
