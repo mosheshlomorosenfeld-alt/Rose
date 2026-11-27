@@ -14,6 +14,7 @@ namespace col
 
 } // namespace rose
 #include "Browser.h"
+#include "ToolWindows.h"
 namespace rose
 {
 
@@ -92,10 +93,11 @@ public:
     void filesDropped (const juce::StringArray&, int x, int y) override;
     void updateSize();
 
-    static constexpr int RULER = 28, LANE = 72;
+    static inline int RULER = 28; static constexpr int LANE = 72;   // RULER grows to 72 when the arranger & chord rows are shown
+    static inline bool songRows = false;
     float ppb = 32.0f;
     struct Sel { int track = -1, clip = -1; bool audio = false; } sel;
-    std::function<void (int track, int clip)> openPianoRoll;
+    std::function<void (int track, int clip)> openPianoRoll, openAudioEditor, openStepSeq;
     std::function<void()> changed;
     void deleteSelected(); void duplicateSelected(); void splitSelected();
     void splitAt (double beat); void copySelected (bool cut); void paste(); void toggleClipLoop(); void loopToSelection();
@@ -105,7 +107,9 @@ public:
 private:
     double snap (double b, bool fine) const { return fine ? b : std::round (b * 4) / 4; }
     Engine& engine;
-    enum class Drag { none, move, resize, loop, seek, fadeIn, fadeOut, clipLoop } drag = Drag::none;
+    enum class Drag { none, move, resize, loop, seek, fadeIn, fadeOut, clipLoop, section } drag = Drag::none;
+    double secA = 0, secB = 0;
+    void rulerClick (const juce::MouseEvent&); void sectionMenu (int i); void chordMenu (double beat, int existing); void rename (std::function<juce::String&()> get, const juce::String& title);
     double fade0 = 0;
     struct Clipboard { bool has = false, audio = false; AudioClip a; MidiClip m; } clipboard;
     double dragStartBeat = 0, clipStart0 = 0, clipLen0 = 0;
@@ -187,13 +191,16 @@ private:
     Engine engine;
     juce::TextButton bHome { "|<" }, bPlay { "Play" }, bStop { "Stop" }, bRec { "Rec" }, bLoop { "Loop" }, bClick { "Click" },
                      bAddAudio { "+ Audio" }, bAddInst { "+ Instrument" }, bMaster { "Master FX" }, bPlugins { "Plugins..." }, bAudio { "Audio/MIDI..." },
-                     bOpen { "Open" }, bSave { "Save" }, bBounce { "Bounce WAV" }, bAbout { "?" }, bTemplates { "Templates" }, bUpdate { "Update" }, bBrowser { "Browser" }, bFile { "File" }, bPointer { "Pointer" }, bScissors { "Scissors" };
+                     bOpen { "Open" }, bSave { "Save" }, bBounce { "Bounce WAV" }, bAbout { "?" }, bTemplates { "Templates" }, bUpdate { "Update" }, bBrowser { "Browser" }, bFile { "File" }, bWindows { "Windows" }, bPointer { "Pointer" }, bScissors { "Scissors" };
     juce::Slider bpm; juce::Label time, bpmLabel { {}, "BPM" };
     juce::Component headerHolder; juce::OwnedArray<TrackHeader> headers;
     struct SyncViewport : juce::Viewport { std::function<void()> moved; void visibleAreaChanged (const juce::Rectangle<int>&) override { if (moved) moved(); } } viewport;
     Timeline timeline { engine }; PlayheadLine playhead;
     DevicePanel devices { engine };
     BrowserPanel browser { engine }; bool showBrowser = true;   // declared after engine: it reads the loop library
+    AnalysisHub hub; juce::OwnedArray<ToolWindow> toolWindows;
+    void toggleWindow (const juce::String& key, const juce::String& title, std::function<juce::Component*()> make);
+    void windowsMenu(); void setSongRows (bool); void jumpMarker (int dir);
     juce::MidiKeyboardComponent keys { engine.keyboard, juce::MidiKeyboardComponent::horizontalKeyboard };
     juce::OwnedArray<PluginWindow> pluginWindows;
     std::unique_ptr<juce::DocumentWindow> pianoRollWindow;

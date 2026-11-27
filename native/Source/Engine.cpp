@@ -1,4 +1,5 @@
 #include "Engine.h"
+#include <numeric>
 
 namespace rose
 {
@@ -44,7 +45,7 @@ void TrackSource::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&
                     for (auto& c : audioClips)
                     {
                         if (! c.data) continue;
-                        const double tempo = c.srcBpm > 0 ? tr.bpm.load() / c.srcBpm : 1.0;   // loops follow the song tempo
+                        const double tempo = c.srcBpm > 0 ? tr.bpmAt (tr.beatsAt (s)) / c.srcBpm : 1.0;   // loops follow the song tempo (and tempo changes)
                         // independent pitch: shifted through the pitch engine, read ~20 ms early to cancel its latency
                         const float semis = c.pitch + (float) tp - (c.srcBpm > 0 ? (float) (12.0 * std::log2 (tempo)) : 0.0f);
                         const bool shift = std::abs (semis) > 0.004f; const juce::int64 leadIn = shift ? (juce::int64) (sr * 0.02) : 0;
@@ -58,8 +59,14 @@ void TrackSource::processBlock (juce::AudioBuffer<float>& buf, juce::MidiBuffer&
                         const double fiS = (double) tr.samplesAt (c.fadeIn), foS = (double) tr.samplesAt (c.fadeOut), clipS = (double) (ce - cs);
                         for (auto t = a; t < b; ++t)
                         {
-                            const auto rel = t - cs, relL = loopS > 0 ? rel % loopS : rel;
-                            const double idx = base + (double) relL * ratio; const int i0 = (int) idx;
+                            const auto rel = t - cs; double idx;
+                            if (c.srcBpm > 0)   // tempo-following loop: read by musical position, so it stays locked through tempo changes
+                            {
+                                const double rb = tr.beatsAt (t + leadIn) - c.start, rl = c.loopLen > 0 && c.loopLen < c.length ? std::fmod (juce::jmax (0.0, rb), c.loopLen) : rb;
+                                idx = base + rl * 60.0 / c.srcBpm * c.fileRate;
+                            }
+                            else { const auto relL = loopS > 0 ? rel % loopS : rel; idx = base + (double) relL * ratio; }
+                            const int i0 = (int) idx; if (i0 < 0) continue;
                             if (i0 + 1 >= len2) { if (loopS > 0) continue; break; }
                             const float fr = (float) (idx - i0);
                             float env = g;
@@ -321,7 +328,7 @@ bool Engine::addAudioFile (Track& t, const juce::File& f, double startBeat)
     auto data = std::make_shared<juce::AudioBuffer<float>> ((int) juce::jmin (2u, r->numChannels), (int) r->lengthInSamples);
     r->read (data.get(), 0, (int) r->lengthInSamples, 0, true, data->getNumChannels() > 1);
     AudioClip c; c.file = f; c.start = startBeat; c.data = data; c.fileRate = r->sampleRate;
-    c.length = (double) r->lengthInSamples / r->sampleRate * transport.bpm.load() / 60.0;
+    c.length = transport.beatAtSec (transport.secAt (startBeat) + (double) r->lengthInSamples / r->sampleRate) - startBeat;
     { const juce::ScopedLock sl (t.src()->lock); t.src()->audioClips.push_back (std::move (c)); }
     sendChangeMessage(); return true;
 }
@@ -434,6 +441,29 @@ void Engine::audioDeviceIOCallbackWithContext (const float* const* in, int numIn
     currentInput = in; currentNumInputs = numIn;
     player.audioDeviceIOCallbackWithContext (in, numIn, out, numOut, n, ctx);
     currentInput = nullptr;
+    if (numIn > 0 && in[0] != nullptr)   // input tap for the tuner
+    { int s1, n1, s2, n2; inFifo.prepareToWrite (n, s1, n1, s2, n2); if (n1 > 0) std::copy (in[0], in[0] + n1, inBuf.begin() + s1); if (n2 > 0) std::copy (in[0] + n1, in[0] + n1 + n2, inBuf.begin() + s2); inFifo.finishedWrite (n1 + n2); }
+    {   // analysis tap (the mix, before A/B)
+        int s1, n1, s2, n2; tapFifo.prepareToWrite (n, s1, n1, s2, n2);
+        for (int ch = 0; ch < 2; ++ch) { const float* src = out[juce::jmin (ch, numOut - 1)]; if (src == nullptr) continue;
+            if (n1 > 0) tapBuf.copyFrom (ch, s1, src, n1); if (n2 > 0) tapBuf.copyFrom (ch, s2, src + n1, n2); }
+        tapFifo.finishedWrite (n1 + n2);
+    }
+    {   // reference track: plays in sync with the playhead; B replaces the mix with it
+        const juce::SpinLock::ScopedTryLockType l (refLock);
+        if (l.isLocked() && reference != nullptr && (refOn.load()))
+        {
+            const auto& r = *reference; const float g = juce::Decibels::decibelsToGain (refGainDb.load());
+            const double sec0 = transport.secAt (transport.beatsAt (transport.pos.load())) + refOffsetSec.load(), step = referenceRate / transport.sampleRate;
+            for (int ch = 0; ch < numOut; ++ch) if (out[ch] != nullptr) juce::FloatVectorOperations::clear (out[ch], n);
+            if (transport.playing.load())
+                for (int i = 0; i < n; ++i)
+                {
+                    const double idx = sec0 * referenceRate + i * step; const int i0 = (int) idx; if (i0 < 0 || i0 + 1 >= r.getNumSamples()) continue; const float fr = (float) (idx - i0);
+                    for (int ch = 0; ch < juce::jmin (2, numOut); ++ch) { const float* d = r.getReadPointer (juce::jmin (ch, r.getNumChannels() - 1)); if (out[ch] != nullptr) out[ch][i] = (d[i0] + (d[i0 + 1] - d[i0]) * fr) * g; }
+                }
+        }
+    }
     {
         const juce::SpinLock::ScopedTryLockType l (previewLock);
         if (l.isLocked() && preview != nullptr)
@@ -456,14 +486,14 @@ void Engine::audioDeviceIOCallbackWithContext (const float* const* in, int numIn
 
     if (transport.playing.load())
     {
-        const auto start = transport.pos.load(); const double sr = transport.sampleRate, spb = transport.spb();
+        const auto start = transport.pos.load(); const double sr = transport.sampleRate;
         if (transport.metronome.load())
             transport.segments (start, n, [&] (juce::int64 s, int off, int len)
             {
                 for (int i = 0; i < len; ++i)
                 {
-                    const double b = (double) (s + i) / spb;
-                    if (std::floor (b) != std::floor (lastBeat) || lastBeat < 0 || b < lastBeat) { metroLeft = (int) (0.035 * sr); metroAccent = ((juce::int64) std::floor (b)) % 4 == 0; metroPhase = 0; }
+                    const double b = transport.beatsAt (s + i);
+                    if (std::floor (b) != std::floor (lastBeat) || lastBeat < 0 || b < lastBeat) { metroLeft = (int) (0.035 * sr); metroAccent = transport.barAt (std::floor (b + 1e-9)).beat < 0.01; metroPhase = 0; }
                     lastBeat = b;
                     if (metroLeft > 0)
                     {
@@ -508,6 +538,16 @@ bool Engine::saveSession (const juce::File& f)
             for (auto& n : c.notes) { auto* ne = x->createNewChildElement ("N"); ne->setAttribute ("p", n.pitch); ne->setAttribute ("s", n.start); ne->setAttribute ("l", n.length); ne->setAttribute ("v", n.vel); }
         }
     }
+    {   // song tools
+        auto* sg = root.createNewChildElement ("Song"); sg->setAttribute ("sig", transport.sig.load());
+        const auto map = transport.currentMap();
+        for (auto& x : map.tempo) { auto* e = sg->createNewChildElement ("Tempo"); e->setAttribute ("b", x.beat); e->setAttribute ("bpm", x.bpm); }
+        for (auto& x : map.meter) { auto* e = sg->createNewChildElement ("Meter"); e->setAttribute ("b", x.beat); e->setAttribute ("n", x.num); }
+        for (auto& x : markers) { auto* e = sg->createNewChildElement ("Marker"); e->setAttribute ("b", x.beat); e->setAttribute ("name", x.name); }
+        for (auto& x : sections) { auto* e = sg->createNewChildElement ("Section"); e->setAttribute ("b", x.start); e->setAttribute ("len", x.len); e->setAttribute ("name", x.name); e->setAttribute ("colour", x.colour.toString()); }
+        for (auto& x : chords) { auto* e = sg->createNewChildElement ("Chord"); e->setAttribute ("b", x.beat); e->setAttribute ("name", x.name); }
+        if (referenceFile.existsAsFile()) { auto* e = sg->createNewChildElement ("Reference"); e->setAttribute ("file", referenceFile.getFullPathName()); e->setAttribute ("gain", refGainDb.load()); e->setAttribute ("offset", refOffsetSec.load()); }
+    }
     auto* m = root.createNewChildElement ("Master"); m->setAttribute ("vol", (double) dynamic_cast<StripProcessor*> (masterStrip->getProcessor())->gainDb.load());
     for (auto& s : masterInserts) writeSlot (*m, "Insert", s);
     return root.writeTo (f);
@@ -522,6 +562,21 @@ bool Engine::loadSession (const juce::File& f)
     while (! masterInserts.empty()) removeInsert (masterInserts, 0);
     transport.bpm = root->getDoubleAttribute ("bpm", 124); transport.loopStart = root->getDoubleAttribute ("loopStart", 0);
     transport.loopEnd = root->getDoubleAttribute ("loopEnd", 16); transport.looping = root->getBoolAttribute ("looping", true);
+    markers.clear(); sections.clear(); chords.clear(); clearReference();
+    {
+        Transport::SongMap map;
+        if (auto* sg = root->getChildByName ("Song"))
+        {
+            transport.sig = sg->getIntAttribute ("sig", 4);
+            for (auto* e : sg->getChildWithTagNameIterator ("Tempo")) map.tempo.push_back ({ e->getDoubleAttribute ("b"), e->getDoubleAttribute ("bpm", 120) });
+            for (auto* e : sg->getChildWithTagNameIterator ("Meter")) map.meter.push_back ({ e->getDoubleAttribute ("b"), e->getIntAttribute ("n", 4) });
+            for (auto* e : sg->getChildWithTagNameIterator ("Marker")) markers.push_back ({ e->getDoubleAttribute ("b"), e->getStringAttribute ("name") });
+            for (auto* e : sg->getChildWithTagNameIterator ("Section")) sections.push_back ({ e->getDoubleAttribute ("b"), e->getDoubleAttribute ("len", 8), e->getStringAttribute ("name"), juce::Colour::fromString (e->getStringAttribute ("colour", "ff5b8def")) });
+            for (auto* e : sg->getChildWithTagNameIterator ("Chord")) chords.push_back ({ e->getDoubleAttribute ("b"), e->getStringAttribute ("name") });
+            if (auto* e = sg->getChildByName ("Reference")) if (loadReference (juce::File (e->getStringAttribute ("file")))) { refGainDb = (float) e->getDoubleAttribute ("gain"); refOffsetSec = e->getDoubleAttribute ("offset"); }
+        }
+        transport.setMap (map);
+    }
     juce::StringArray problems;
     auto loadSlot = [&] (juce::XmlElement* e, auto&& apply)
     {
@@ -630,6 +685,7 @@ bool Engine::applyTemplate (const juce::var& t, juce::StringArray& problems)
     stop(); transport.playing = false; transport.pos = 0;
     while (! tracks.empty()) removeTrack ((int) tracks.size() - 1);
     while (! masterInserts.empty()) removeInsert (masterInserts, 0);
+    markers.clear(); sections.clear(); chords.clear(); transport.setMap ({}); transport.sig = 4;
     transport.bpm = (double) t.getProperty ("bpm", 120);
     if (auto* loop = t["loop"].getArray(); loop != nullptr && loop->size() == 2) { transport.loopStart = (double) (*loop)[0]; transport.loopEnd = (double) (*loop)[1]; }
     transport.looping = true;
@@ -748,7 +804,7 @@ void Engine::previewLoop (const LoopInfo* L, int semis)
         {
             next = std::make_unique<Preview>(); next->id = L->id;
             next->data.setSize ((int) juce::jmin (2u, r->numChannels), (int) r->lengthInSamples); r->read (&next->data, 0, (int) r->lengthInSamples, 0, true, true);
-            const double tempo = L->bpm > 0 ? transport.bpm.load() / L->bpm : 1.0, sr = transport.sampleRate;
+            const double tempo = L->bpm > 0 ? transport.bpmAt (transport.beatsAt (transport.pos.load())) / L->bpm : 1.0, sr = transport.sampleRate;
             next->rate = r->sampleRate / sr * tempo;
             next->end = L->bpm > 0 && L->beats > 0 ? juce::jmin ((double) r->lengthInSamples, L->beats * 60.0 / L->bpm * r->sampleRate) : (double) r->lengthInSamples;
             const float s = (float) semis - (float) (12.0 * std::log2 (tempo));
@@ -757,5 +813,198 @@ void Engine::previewLoop (const LoopInfo* L, int semis)
         }
     }
     const juce::SpinLock::ScopedLockType l (previewLock); std::swap (preview, next);
+}
+} // namespace rose
+
+namespace rose
+{
+//============================================================================== song tools
+void Engine::splitAudio (std::vector<AudioClip>& clips, size_t index, double at, const Transport& tr)
+{
+    auto& c = clips[index]; if (at <= c.start + 1e-6 || at >= c.start + c.length - 1e-6) return;
+    const double cut = at - c.start, L = c.loopLen > 0 && c.loopLen < c.length + 1e-9 ? c.loopLen : 0, ph = L > 0 ? std::fmod (cut, L) : cut;
+    // source seconds for a span of beats from the clip start: loops read at their own tempo, other clips in real time
+    auto secs = [&] (double b) { return c.srcBpm > 0 ? b * 60.0 / c.srcBpm : tr.secAt (c.start + b) - tr.secAt (c.start); };
+    auto d = c; d.start = at; d.length = c.length - cut; d.loopLen = 0; d.fadeIn = 0; d.offsetSec = c.offsetSec + secs (ph);
+    std::vector<AudioClip> extra;
+    if (L > 0)
+    {
+        if (ph < 1e-9) { d.offsetSec = c.offsetSec; d.loopLen = L; }
+        else
+        {
+            const double rest = d.length, first = juce::jmin (rest, L - ph); d.length = first;
+            if (rest - first > 1e-9) { auto e = c; e.start = at + first; e.length = rest - first; e.loopLen = L; e.fadeIn = 0; d.fadeOut = 0; extra.push_back (e); }
+        }
+    }
+    c.length = cut; if (L > 0 && c.length <= L + 1e-9) c.loopLen = 0; c.fadeOut = 0;
+    clips.push_back (d); for (auto& e : extra) clips.push_back (e);
+}
+void Engine::splitMidi (std::vector<MidiClip>& clips, size_t index, double at)
+{
+    auto& c = clips[index]; if (at <= c.start + 1e-6 || at >= c.start + c.length - 1e-6) return;
+    if (c.loopLen > 0 && c.loopLen < c.length)
+    {
+        std::vector<Note> all; for (double o = 0; o < c.length - 1e-9; o += c.loopLen) for (auto& n : c.notes) if (n.start < c.loopLen && o + n.start < c.length) all.push_back ({ n.pitch, o + n.start, juce::jmin (n.length, c.loopLen - n.start), n.vel });
+        c.notes = all; c.loopLen = 0;
+    }
+    auto d = c; const double cut = at - c.start; d.start = at; d.length = c.length - cut; d.notes.clear();
+    for (auto& n : c.notes) if (n.start >= cut) d.notes.push_back ({ n.pitch, n.start - cut, n.length, n.vel });
+    c.notes.erase (std::remove_if (c.notes.begin(), c.notes.end(), [cut] (auto& n) { return n.start >= cut; }), c.notes.end()); c.length = cut;
+    for (auto& n : c.notes) n.length = juce::jmin (n.length, cut - n.start);
+    clips.push_back (d);
+}
+void Engine::splitAllAt (double at)
+{
+    for (auto& t : tracks)
+    {
+        auto* s = t->src(); const juce::ScopedLock sl (s->lock);
+        for (size_t i = 0, n = s->audioClips.size(); i < n; ++i) splitAudio (s->audioClips, i, at, transport);
+        for (size_t i = 0, n = s->midiClips.size(); i < n; ++i) splitMidi (s->midiClips, i, at);
+    }
+}
+void Engine::insertTime (double at, double len)
+{
+    for (auto& t : tracks) { auto* s = t->src(); const juce::ScopedLock sl (s->lock); for (auto& c : s->audioClips) if (c.start >= at - 1e-9) c.start += len; for (auto& c : s->midiClips) if (c.start >= at - 1e-9) c.start += len; }
+    for (auto& m : markers) if (m.beat >= at - 1e-9) m.beat += len;
+    for (auto& x : chords) if (x.beat >= at - 1e-9) x.beat += len;
+    for (auto& x : sections) if (x.start >= at - 1e-9) x.start += len;
+    auto map = transport.currentMap(); for (auto& x : map.tempo) if (x.beat >= at - 1e-9) x.beat += len; for (auto& x : map.meter) if (x.beat >= at - 1e-9) x.beat += len; transport.setMap (map);
+    if (transport.loopStart.load() >= at) { transport.loopStart = transport.loopStart.load() + len; transport.loopEnd = transport.loopEnd.load() + len; }
+}
+void Engine::removeTime (double from, double to)
+{
+    const double len = to - from; auto inside = [&] (double b) { return b >= from - 1e-9 && b < to - 1e-9; };
+    for (auto& t : tracks)
+    {
+        auto* s = t->src(); const juce::ScopedLock sl (s->lock);
+        s->audioClips.erase (std::remove_if (s->audioClips.begin(), s->audioClips.end(), [&] (auto& c) { return inside (c.start); }), s->audioClips.end());
+        s->midiClips.erase (std::remove_if (s->midiClips.begin(), s->midiClips.end(), [&] (auto& c) { return inside (c.start); }), s->midiClips.end());
+        for (auto& c : s->audioClips) if (c.start >= to - 1e-9) c.start -= len; for (auto& c : s->midiClips) if (c.start >= to - 1e-9) c.start -= len;
+    }
+    auto prune = [&] (auto& v, auto get) { v.erase (std::remove_if (v.begin(), v.end(), [&] (auto& x) { return inside (get (x)); }), v.end()); for (auto& x : v) if (get (x) >= to - 1e-9) get (x) -= len; };
+    prune (markers, [] (Marker& m) -> double& { return m.beat; }); prune (chords, [] (ChordMark& m) -> double& { return m.beat; }); prune (sections, [] (Section& m) -> double& { return m.start; });
+    auto map = transport.currentMap(); prune (map.tempo, [] (Transport::TempoPoint& x) -> double& { return x.beat; }); prune (map.meter, [] (Transport::MeterPoint& x) -> double& { return x.beat; }); transport.setMap (map);
+}
+// everything inside [from, to), copied with positions relative to `from`
+struct RegionCopy { std::vector<std::pair<int, AudioClip>> audio; std::vector<std::pair<int, MidiClip>> midi; std::vector<Engine::Marker> markers; std::vector<Engine::ChordMark> chords; };
+static RegionCopy copyRegion (Engine& e, double from, double to)
+{
+    RegionCopy r; auto inside = [&] (double b) { return b >= from - 1e-9 && b < to - 1e-9; };
+    for (int ti = 0; ti < (int) e.tracks.size(); ++ti)
+    {
+        auto* s = e.tracks[(size_t) ti]->src(); const juce::ScopedLock sl (s->lock);
+        for (auto c : s->audioClips) if (inside (c.start)) { c.start -= from; r.audio.push_back ({ ti, c }); }
+        for (auto c : s->midiClips) if (inside (c.start)) { c.start -= from; r.midi.push_back ({ ti, c }); }
+    }
+    for (auto m : e.markers) if (inside (m.beat)) { m.beat -= from; r.markers.push_back (m); }
+    for (auto m : e.chords) if (inside (m.beat)) { m.beat -= from; r.chords.push_back (m); }
+    return r;
+}
+static void pasteRegion (Engine& e, const RegionCopy& r, double at)
+{
+    for (auto [ti, c] : r.audio) { auto* s = e.tracks[(size_t) ti]->src(); const juce::ScopedLock sl (s->lock); c.start += at; s->audioClips.push_back (c); }
+    for (auto [ti, c] : r.midi) { auto* s = e.tracks[(size_t) ti]->src(); const juce::ScopedLock sl (s->lock); c.start += at; s->midiClips.push_back (c); }
+    for (auto m : r.markers) { m.beat += at; e.markers.push_back (m); }
+    for (auto m : r.chords) { m.beat += at; e.chords.push_back (m); }
+}
+void Engine::duplicateSection (int i)
+{
+    if (! juce::isPositiveAndBelow (i, (int) sections.size())) return;
+    const auto x = sections[(size_t) i]; const double a = x.start, b = x.start + x.len;
+    splitAllAt (a); splitAllAt (b); const auto cp = copyRegion (*this, a, b); insertTime (b, x.len); pasteRegion (*this, cp, b);
+    auto copy = x; copy.start = b; copy.name = x.name + " 2"; sections.push_back (copy); sendChangeMessage();
+}
+void Engine::deleteSection (int i, bool keepTime)
+{
+    if (! juce::isPositiveAndBelow (i, (int) sections.size())) return;
+    const auto x = sections[(size_t) i]; const double a = x.start, b = x.start + x.len; splitAllAt (a); splitAllAt (b);
+    if (keepTime)
+        for (auto& t : tracks) { auto* s = t->src(); const juce::ScopedLock sl (s->lock); auto in = [&] (double v) { return v >= a - 1e-9 && v < b - 1e-9; };
+            s->audioClips.erase (std::remove_if (s->audioClips.begin(), s->audioClips.end(), [&] (auto& c) { return in (c.start); }), s->audioClips.end());
+            s->midiClips.erase (std::remove_if (s->midiClips.begin(), s->midiClips.end(), [&] (auto& c) { return in (c.start); }), s->midiClips.end()); }
+    else removeTime (a, b);
+    if (keepTime) sections.erase (sections.begin() + i);
+    sendChangeMessage();
+}
+bool Engine::moveSection (int i, int dir)
+{
+    if (! juce::isPositiveAndBelow (i, (int) sections.size())) return false;
+    std::vector<int> order ((size_t) sections.size()); std::iota (order.begin(), order.end(), 0);
+    std::sort (order.begin(), order.end(), [&] (int a, int b) { return sections[(size_t) a].start < sections[(size_t) b].start; });
+    const int k = (int) (std::find (order.begin(), order.end(), i) - order.begin()), j = k + dir; if (! juce::isPositiveAndBelow (j, (int) order.size())) return false;
+    const auto x = sections[(size_t) i]; const auto other = sections[(size_t) order[(size_t) j]];
+    const double a = x.start, b = x.start + x.len; splitAllAt (a); splitAllAt (b); const auto cp = copyRegion (*this, a, b);
+    removeTime (a, b);   // also removes this section
+    double target = dir < 0 ? other.start : other.start + other.len; if (dir > 0) target -= x.len;   // positions shifted by the removal
+    splitAllAt (target); insertTime (target, x.len); pasteRegion (*this, cp, target);
+    auto moved = x; moved.start = target; sections.push_back (moved); sendChangeMessage(); return true;
+}
+void Engine::addMarker (double beat, const juce::String& name)
+{
+    markers.push_back ({ std::round (beat * 4) / 4, name.isNotEmpty() ? name : "Marker " + juce::String ((int) markers.size() + 1) });
+    std::sort (markers.begin(), markers.end(), [] (auto& a, auto& b) { return a.beat < b.beat; }); sendChangeMessage();
+}
+void Engine::detectChords()
+{
+    static const juce::StringArray K { "C", "Db", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B" };
+    static const std::vector<std::pair<const char*, std::vector<int>>> Q { { "", { 0, 4, 7 } }, { "m", { 0, 3, 7 } }, { "7", { 0, 4, 7, 10 } }, { "maj7", { 0, 4, 7, 11 } }, { "m7", { 0, 3, 7, 10 } },
+        { "sus2", { 0, 2, 7 } }, { "sus4", { 0, 5, 7 } }, { "dim", { 0, 3, 6 } }, { "aug", { 0, 4, 8 } } };
+    double end = songEndBeats(); std::vector<ChordMark> out;
+    for (int k = 0; transport.barStart (k) < end; ++k)
+    {
+        const double b0 = transport.barStart (k), b1 = transport.barStart (k + 1); double w[12] {};
+        for (auto& t : tracks)
+        {
+            auto* s = t->src(); if (t->isAudio || t->mute || s->drumKit.load()) continue; const juce::ScopedLock sl (s->lock);
+            for (auto& c : s->midiClips) { const double L = c.loopLen > 0 && c.loopLen < c.length ? c.loopLen : c.length;
+                for (double o = 0; o < c.length - 1e-9; o += L) for (auto& n : c.notes) { if (n.start >= L) continue; const double s0 = c.start + o + n.start, s1 = s0 + juce::jmin (n.length, L - n.start);
+                    const double ov = juce::jmin (s1, b1) - juce::jmax (s0, b0); if (ov > 0) w[((n.pitch + c.transpose + s->transpose.load()) % 12 + 12) % 12] += ov * n.vel; } }
+        }
+        double tot = 0; for (double v : w) tot += v; if (tot <= 0) continue;
+        double best = 0.2; juce::String name;
+        for (int r = 0; r < 12; ++r) for (auto& [q, iv] : Q)
+        {
+            bool in[12] {}; for (int x : iv) in[(r + x) % 12] = true; double hit = 0, miss = 0;
+            for (int pc = 0; pc < 12; ++pc) (in[pc] ? hit : miss) += w[pc] / tot;
+            const double score = hit - miss * 0.6 - (iv.size() > 3 ? 0.06 : 0) + (w[r] > 0 ? 0.08 : 0);
+            if (score > best) { best = score; name = K[r] + q; }
+        }
+        if (name.isNotEmpty() && (out.empty() || out.back().name != name)) out.push_back ({ b0, name });
+    }
+    if (! out.empty()) chords = out;
+    sendChangeMessage();
+}
+int Engine::readTap (juce::AudioBuffer<float>& dest)
+{
+    int s1, n1, s2, n2; tapFifo.prepareToRead (tapFifo.getNumReady(), s1, n1, s2, n2); const int n = n1 + n2;
+    if (dest.getNumSamples() < n) dest.setSize (2, n, false, false, true);
+    for (int ch = 0; ch < 2; ++ch) { if (n1 > 0) dest.copyFrom (ch, 0, tapBuf, ch, s1, n1); if (n2 > 0) dest.copyFrom (ch, n1, tapBuf, ch, s2, n2); }
+    tapFifo.finishedRead (n); return n;
+}
+int Engine::readInput (std::vector<float>& dest)
+{
+    int s1, n1, s2, n2; inFifo.prepareToRead (inFifo.getNumReady(), s1, n1, s2, n2); dest.resize ((size_t) (n1 + n2));
+    std::copy (inBuf.begin() + s1, inBuf.begin() + s1 + n1, dest.begin()); std::copy (inBuf.begin() + s2, inBuf.begin() + s2 + n2, dest.begin() + n1);
+    inFifo.finishedRead (n1 + n2); return n1 + n2;
+}
+bool Engine::loadReference (const juce::File& f)
+{
+    std::unique_ptr<juce::AudioFormatReader> r (audioFormats.createReaderFor (f)); if (r == nullptr) return false;
+    auto data = std::make_shared<juce::AudioBuffer<float>> ((int) juce::jmin (2u, r->numChannels), (int) r->lengthInSamples);
+    r->read (data.get(), 0, (int) r->lengthInSamples, 0, true, data->getNumChannels() > 1);
+    referenceLufs = measureLoudness (*data, r->sampleRate).integrated; referenceFile = f;
+    const juce::SpinLock::ScopedLockType l (refLock); reference = data; referenceRate = r->sampleRate; return true;
+}
+void Engine::clearReference() { refOn = false; std::shared_ptr<juce::AudioBuffer<float>> old; { const juce::SpinLock::ScopedLockType l (refLock); std::swap (old, reference); } referenceFile = juce::File(); }
+} // namespace rose
+
+namespace rose
+{
+Loudness measureLoudness (const juce::AudioBuffer<float>& b, double sr)
+{
+    KWeight k; k.prepare (sr); std::vector<double> blocks; float pk = 0;
+    for (int ch = 0; ch < b.getNumChannels(); ++ch) pk = juce::jmax (pk, b.getMagnitude (ch, 0, b.getNumSamples()));
+    k.process (b.getReadPointer (0), b.getNumChannels() > 1 ? b.getReadPointer (1) : nullptr, b.getNumSamples(), [&] (double ms) { blocks.push_back (ms); });
+    return { KWeight::integrated (blocks), juce::Decibels::gainToDecibels (pk, -100.0f) };
 }
 } // namespace rose
