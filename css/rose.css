@@ -281,3 +281,39 @@ body.session .ruler{cursor:default}
 #devices .dev.dropbefore{box-shadow:-3px 0 0 var(--sel)}#devices .dev.dropafter{box-shadow:3px 0 0 var(--sel)}
 #devices .dev h4[draggable]{cursor:grab}
 #lib [data-fx],#lib [data-chain]{cursor:grab}
+/* ---------- song tools: markers, flags, arranger and chord rows ---------- */
+.ruler .bar{top:22px}.ruler .bar.nolab{border-left-color:var(--line)}
+.ruler .mk{position:absolute;top:22px;height:16px;padding:0 6px 0 5px;font-size:11px;line-height:16px;background:var(--ink);color:var(--deck);border-radius:0 3px 3px 0;white-space:nowrap;cursor:pointer;z-index:2;max-width:140px;overflow:hidden;text-overflow:ellipsis}
+.ruler .mk::before{content:"";position:absolute;left:0;top:0;bottom:-14px;width:1px;background:var(--ink)}
+.ruler .tflag{position:absolute;top:38px;font-size:10px;line-height:13px;padding:0 4px;border:1px solid var(--line2);border-radius:2px;background:var(--deck);color:var(--mute);cursor:pointer;white-space:nowrap;font-variant-numeric:tabular-nums}
+.ruler .tflag.sig{top:22px;margin-left:2px}
+body.songrows .ruler,body.songrows .hcorner{height:96px}
+body.songrows .hcorner{align-content:start}
+body.songrows .hcorner::after{content:"Arranger\A Chords";white-space:pre;grid-column:1/-1;align-self:end;font-size:11px;line-height:20px;color:var(--mute);text-align:right}
+.ruler .srow2{position:absolute;left:0;right:0;height:20px;border-top:1px solid var(--line)}
+.ruler .arrrow{top:54px;cursor:copy}.ruler .chordrow{top:75px;cursor:cell}
+.ruler .sec{position:absolute;top:1px;height:18px;padding:0 6px;font-size:11px;font-weight:600;line-height:18px;border-radius:3px;background:color-mix(in srgb,var(--c) 55%,var(--chassis));color:#fff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--c) 80%,#000)}
+.ruler .sec.ghost{--c:var(--sel);opacity:.5;pointer-events:none}
+.ruler .chd{position:absolute;top:1px;height:18px;padding:0 6px;font-size:12px;font-weight:600;line-height:18px;border-left:2px solid var(--sel);color:var(--ink);white-space:nowrap;overflow:hidden;cursor:pointer;background:linear-gradient(90deg,color-mix(in srgb,var(--sel) 14%,transparent),transparent)}
+.chordpick>div{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:8px}.chordpick button{min-width:46px;padding:6px 8px}.chordpick button.on{background:var(--sel);color:var(--onacc);border-color:var(--sel)}
+/* ---------- floating windows ---------- */
+.fwin.big{resize:both;overflow:hidden;min-width:420px;min-height:220px}
+.fwin.big .fbody{max-height:none;height:calc(100% - 28px);overflow:auto}
+.edwin{width:860px;height:440px;max-width:90vw}.edwin .prwrap{max-height:340px}
+.mixwin #mixer{height:auto}.fwin.wide{width:min(1200px,94vw);height:min(520px,70vh)}
+.toolwin{padding:12px;min-width:300px;font-size:13px}.toolwin .small{color:var(--mute);font-size:12px;margin:8px 0 0}
+.toolwin .prbar{margin-top:10px;display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.tuner{text-align:center;width:320px}.tnote{font-size:56px;font-weight:600;line-height:1.1;font-variant-numeric:tabular-nums}.thz{color:var(--mute);margin:4px 0}
+.specbig{width:100%;height:auto;background:var(--deck);border-radius:var(--r);display:block}
+.loudgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}.loudgrid div{background:var(--deck);border-radius:var(--r);padding:8px 10px}
+.loudgrid span{display:block;font-size:11px;color:var(--mute)}.loudgrid b{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}.loudgrid b.hot{color:var(--rec)}
+#lCv{width:100%;background:var(--deck);border-radius:var(--r)}
+.scopewrap{display:flex;gap:14px;align-items:flex-start}.scopewrap canvas{border-radius:var(--r)}.scmeters>div{margin-bottom:12px}.scmeters span{display:block;font-size:11px;color:var(--mute)}.scmeters b{font-variant-numeric:tabular-nums}
+.abrow{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:10px}.abrow button{padding:12px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.abrow button.on{background:var(--sel);color:var(--onacc);border-color:var(--sel)}
+.tt{width:100%;border-collapse:collapse;margin:8px 0}.tt th,.tt td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);font-size:12px}.tt input{width:70px}
+.cgwin{width:740px;max-width:90vw}.cggrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px 10px}
+.cggrid label{display:flex;flex-direction:column;gap:3px;font-size:11px;color:var(--mute)}.cggrid select,.cggrid input[type=range]{font-size:13px;width:100%}
+.cggrid label.chk{flex-direction:row;align-items:center;gap:6px;grid-column:span 2;color:var(--ink);font-size:12px}
+.cgchips{display:flex;flex-wrap:wrap;gap:4px;margin:12px 0 8px}.cgchips button{font-weight:600;min-width:52px}
+.cgroll{width:100%;height:auto;border-radius:var(--r);display:block}
+kbd{font:inherit;font-size:11px;padding:0 4px;border:1px solid var(--line2);border-radius:3px;background:var(--deck)}

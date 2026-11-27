@@ -57,7 +57,22 @@ class RosePitch extends AudioWorkletProcessor{
       const b=this.buf;let pos=this.w-(this.ph*W+2)+N,i0=Math.floor(pos),fr=pos-i0;let y=g1*(b[i0%N]*(1-fr)+b[(i0+1)%N]*fr);pos=this.w-(p2*W+2)+N;i0=Math.floor(pos);fr=pos-i0;y+=g2*(b[i0%N]*(1-fr)+b[(i0+1)%N]*fr);
       this.w=(this.w+1)%N;for(let c=0;c<out.length;c++)out[c][n]=y}
     return true}}
-registerProcessor('rose-pitch',RosePitch);`;
+registerProcessor('rose-pitch',RosePitch);
+// EBU R128 / BS.1770 loudness: K-weighting, then mean square per 100 ms block (posted to the page with the block's sample peak)
+class RoseLoud extends AudioWorkletProcessor{
+  constructor(){super();const fs=sampleRate;
+    let K=Math.tan(Math.PI*1681.974450955533/fs),Vh=Math.pow(10,3.999843853973347/20),Vb=Math.pow(Vh,0.4996667741545416),Q=0.7071752369554196,a0=1+K/Q+K*K;
+    this.s1=[(Vh+Vb*K/Q+K*K)/a0,2*(K*K-Vh)/a0,(Vh-Vb*K/Q+K*K)/a0,2*(K*K-1)/a0,(1-K/Q+K*K)/a0];
+    K=Math.tan(Math.PI*38.13547087602444/fs);Q=0.5003270373238773;a0=1+K/Q+K*K;this.s2=[1/a0*a0,-2,1,2*(K*K-1)/a0,(1-K/Q+K*K)/a0];this.s2=[1,-2,1,this.s2[3],this.s2[4]];
+    this.z=[[0,0,0,0],[0,0,0,0]];this.acc=0;this.n=0;this.pk=0;this.N=Math.round(fs/10)}
+  process(i){const inp=i[0];if(!inp||!inp.length)return true;const L=inp[0].length,a=this.s1,b=this.s2;
+    for(let c=0;c<Math.min(2,inp.length);c++){const x=inp[c],z=this.z[c];
+      for(let k=0;k<L;k++){const v=x[k];const ab=Math.abs(v);if(ab>this.pk)this.pk=ab;
+        const y1=a[0]*v+z[0];z[0]=a[1]*v-a[3]*y1+z[1];z[1]=a[2]*v-a[4]*y1;
+        const y2=b[0]*y1+z[2];z[2]=b[1]*y1-b[3]*y2+z[3];z[3]=b[2]*y1-b[4]*y2;this.acc+=y2*y2}}
+    this.n+=L;if(this.n>=this.N){this.port.postMessage({ms:this.acc/this.n,pk:this.pk});this.acc=0;this.n=0;this.pk=0}
+    return true}}
+registerProcessor('rose-loud',RoseLoud);`;
 
 const loaded = new WeakSet();
 export async function prepareWorklets(ctx) {

@@ -1,6 +1,6 @@
 // Rose Studio offline support: the app shell is cached so the installed app opens without internet.
-const VERSION = 'rose-1.3.0', SOUNDS = 'rose-sounds-1';   // instrument samples never change, so they get their own long-lived cache
-const SHELL = ['./', './index.html', './css/rose.css', './js/app.js', './js/engine.js', './js/effects.js', './js/instruments.js', './templates/templates.json', './loops/index.json',
+const VERSION = 'rose-1.4.0', SOUNDS = 'rose-sounds-1';   // instrument samples never change, so they get their own long-lived cache
+const SHELL = ['./', './index.html', './css/rose.css', './js/app.js', './js/engine.js', './js/effects.js', './js/instruments.js', './js/chordgen.js', './templates/templates.json', './loops/index.json',
   './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png', './icons/maskable-512.png', './icons/apple-touch-icon.png', './icons/favicon-64.png', './icons/logo.svg'];
 self.addEventListener('install', e => { e.waitUntil(caches.open(VERSION).then(c => c.addAll(SHELL)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', e => { e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== VERSION && k !== SOUNDS).map(k => caches.delete(k)))).then(() => self.clients.claim())); });

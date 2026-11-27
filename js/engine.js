@@ -42,6 +42,21 @@ export function newProject() {
     master: { vol: -1, inserts: [{ id: uid(), type: 'limiter', params: { ceiling: -0.3 }, bypass: false }] }
   };
 }
+// ---------- tempo & meter maps ----------
+// p.tempo = [{ b, bpm }] tempo changes after beat 0 (beat 0 always uses p.bpm); p.meter = [{ b, n }] time-signature changes at bar lines
+export const tempoChanges = p => (p.tempo || []).filter(x => x.b > 1e-9).sort((a, b) => a.b - b.b);
+export const bpmAt = (p, b) => { let v = p.bpm; for (const x of tempoChanges(p)) { if (x.b <= b + 1e-9) v = x.bpm; else break; } return v; };
+export const nextTempoChange = (p, b) => tempoChanges(p).find(x => x.b > b + 1e-9)?.b ?? Infinity;
+export function secAt(p, b) { let t = 0, cur = 0, bpm = p.bpm; for (const x of tempoChanges(p)) { if (x.b >= b) break; t += (x.b - cur) * 60 / bpm; cur = x.b; bpm = x.bpm; } return t + (b - cur) * 60 / bpm; }
+export const meterChanges = p => (p.meter || []).filter(x => x.b > 1e-9).sort((a, b) => a.b - b.b);
+// bar number (0-based), beat within the bar and beats per bar at beat b
+export function barAt(p, b) {
+  let bar = 0, cur = 0, n = p.sig || 4;
+  for (const x of meterChanges(p)) { if (x.b > b + 1e-9) break; bar += Math.round((x.b - cur) / n); cur = x.b; n = x.n; }
+  const k = Math.floor((b - cur) / n + 1e-9); return { bar: bar + k, beat: b - cur - k * n, n, start: cur + k * n };
+}
+export const barStart = (p, bar) => { let cur = 0, n = p.sig || 4, k = 0; for (const x of meterChanges(p)) { const bars = Math.round((x.b - cur) / n); if (k + bars > bar) break; k += bars; cur = x.b; n = x.n; } return cur + (bar - k) * n; };
+
 // Audio clip speed. Loops dropped from the library carry their source tempo (c.bpm) and follow the song tempo.
 export const clipRate = (c, bpm) => c.bpm ? bpm / c.bpm : (c.rate || 1);
 // Total pitch change in semitones: clip pitch + track transpose, minus the repitch a tempo-following loop would get.
@@ -104,7 +119,7 @@ export class Engine {
     await prepareWorklets(this.ctx);
     await this.rebuild();
   }
-  get spb() { return 60 / this.p.bpm; }
+  get spb() { return 60 / bpmAt(this.p, this.position()); }   // seconds per beat at the playhead (tempo map aware)
   env(ctx) { return { bpm: this.p.bpm, buffer: id => this.buffers.get(id), midiOut: name => ctx === this.ctx ? (this.midiOutputs?.get(name) || [...(this.midiOutputs?.values() || [])][0]) : null, perfTime: t => performance.now() + Math.max(0, t - ctx.currentTime + (ctx.outputLatency || 0)) * 1000 }; }
   notesOf(c, p = this.p) { return c.pattern ? (p.patterns?.[c.pattern]?.notes || []) : (c.notes || []); }
   loopLen(c, p = this.p) { return c.pattern ? (p.patterns?.[c.pattern]?.len || c.len) : (c.loopLen || c.len); }
@@ -130,7 +145,9 @@ export class Engine {
   }
   async build(ctx, live, p = this.p) {
     const g = { tracks: new Map(), returns: new Map() };
-    g.master = await this.strip(ctx, p.master.inserts, ctx.destination, live);
+    // live: master -> monitor -> speakers, so a reference track can be A/B'd without touching the mix
+    if (live) { g.monitor = ctx.createGain(); g.monitor.connect(ctx.destination); g.monitor.gain.value = this.monitorGain ?? 1; }
+    g.master = await this.strip(ctx, p.master.inserts, g.monitor || ctx.destination, live);
     g.master.fader.gain.value = db(p.master.vol);
     g.analyser = ctx.createAnalyser(); g.analyser.fftSize = 4096; g.analyser.smoothingTimeConstant = 0.75; g.master.fader.connect(g.analyser);
     for (const r of p.returns) { const s = await this.strip(ctx, r.inserts, g.master.input, live); s.fader.gain.value = db(r.vol); g.returns.set(r.id, s); }
@@ -236,18 +253,19 @@ export class Engine {
     if (!this.playing || !this.ctx) return this.p.cursor || 0;
     const now = this.ctx.currentTime - this.latency; let s = this.segs[0];
     for (const x of this.segs) if (x.t <= now) s = x;
-    return s.b + Math.max(0, now - s.t) / this.spb;
+    return s.b + Math.max(0, now - s.t) / (60 / (s.bpm || this.p.bpm));
   }
+  tempoFx(bpm) { if (!this.g) return; [this.g.master, ...this.g.tracks.values(), ...this.g.returns.values()].forEach(s => s.fx.forEach(f => f.node?.tempo?.(bpm))); }
   async play(from = this.p.cursor || 0) {
     await this.start(); if (this.playing) return;
     const lp = this.p.loop; if (lp.on && !this.sessionActive() && (from >= lp.end || from < lp.start)) from = lp.start;
-    this.playing = true; const t0 = this.ctx.currentTime + 0.06;
-    this.segs = [{ t: t0, b: from, first: true }]; this.schedBeat = from; this.syncFx(true, t0 - from * this.spb);
-    this.tick(); this.timer = setInterval(() => this.tick(), 25); this.emit('transport');
+    this.playing = true; const t0 = this.ctx.currentTime + 0.06, bpm = bpmAt(this.p, from);
+    this.segs = [{ t: t0, b: from, first: true, bpm }]; this.schedBeat = from; if (bpm !== this.p.bpm) this.tempoFx(bpm); this.syncFx(true, t0 - from * 60 / bpm);
+    this.tick(); this.timer = setInterval(() => this.tick(), 25); this.onPlay?.(t0, from); this.emit('transport');
   }
   stop(keep = false) {
     if (!this.playing) { if (!keep) { this.live = {}; this.queued = {}; this.p.cursor = this.p.loop.on ? this.p.loop.start : 0; this.emit('transport'); this.emit('session'); } return; }
-    const pos = this.position(); clearInterval(this.timer); this.playing = false;
+    const pos = this.position(); clearInterval(this.timer); this.playing = false; this.onStop?.();
     const now = this.ctx.currentTime; this.sources.forEach(s => { try { s.stop(now + 0.01); } catch { } }); this.sources = [];
     this.g?.tracks.forEach(s => s.inst?.allOff(now)); this.syncFx(false);
     if (!keep) { this.live = {}; this.queued = {}; this.emit('session'); }
@@ -257,11 +275,12 @@ export class Engine {
   tick() {
     const ahead = this.ctx.currentTime + 0.15, lp = this.p.loop;
     for (let guard = 0; guard < 8; guard++) {
-      const seg = this.segs[this.segs.length - 1];
-      const endB = lp.on && !this.recording && !this.sessionActive() ? lp.end : Infinity;
-      const winEndB = Math.min(endB, seg.b + (ahead - seg.t) / this.spb);
+      const seg = this.segs[this.segs.length - 1], sspb = 60 / (seg.bpm || this.p.bpm);
+      const endB = lp.on && !this.recording && !this.sessionActive() ? lp.end : Infinity, tc = nextTempoChange(this.p, seg.b);
+      const winEndB = Math.min(endB, tc, seg.b + (ahead - seg.t) / sspb);
       if (winEndB > this.schedBeat) { this.schedule(this.ctx, seg, this.schedBeat, winEndB, seg.first); seg.first = false; this.schedBeat = winEndB; }
-      if (winEndB >= endB) { const t = seg.t + (endB - seg.b) * this.spb; this.segs.push({ t, b: lp.start, first: true }); this.schedBeat = lp.start; this.syncFx(true, t - lp.start * this.spb); if (this.segs.length > 4) this.segs.shift(); }
+      if (winEndB >= endB) { const t = seg.t + (endB - seg.b) * sspb, bpm = bpmAt(this.p, lp.start); this.segs.push({ t, b: lp.start, first: true, bpm }); this.schedBeat = lp.start; this.onLoop?.(t, lp.start); this.tempoFx(bpm); this.syncFx(true, t - lp.start * 60 / bpm); if (this.segs.length > 4) this.segs.shift(); }
+      else if (winEndB >= tc) { const t = seg.t + (tc - seg.b) * sspb, bpm = bpmAt(this.p, tc); this.segs.push({ t, b: tc, first: false, bpm }); this.tempoFx(bpm); if (this.segs.length > 4) this.segs.shift(); }
       else break;
     }
     const b = this.position(); this.applyAuto(this.g, this.p, b);
@@ -270,7 +289,7 @@ export class Engine {
   }
   // schedule everything between beats b0..b1 on a segment (also used by offline export)
   schedule(ctx, seg, b0, b1, first, g = this.g, out = this.sources, p = this.p, live = ctx === this.ctx ? this.live : {}) {
-    const spb = 60 / p.bpm, T = b => seg.t + (b - seg.b) * spb;
+    const bpm = seg.bpm || bpmAt(p, seg.b), spb = 60 / bpm, T = b => seg.t + (b - seg.b) * spb;
     const playClip = (s, c, cStart, cEnd, t) => {
       if (cEnd <= b0 || cStart >= b1) return;
       if (isMidi(c)) {
@@ -288,12 +307,12 @@ export class Engine {
         const L = Math.max(0.0625, c.loopLen || c.len), loops = cEnd - cStart > L + 1e-6;   // looped clips and session clips repeat
         const k0 = loops ? Math.max(0, Math.floor((b0 - cStart) / L)) : 0, k1 = loops ? Math.floor((b1 - cStart) / L) : 0;
         for (let k = k0; k <= k1; k++) {
-          const os = cStart + k * L, oe = Math.min(os + L, cEnd), rate = clipRate(c, p.bpm); let startB = null, off = c.offset || 0;
+          const os = cStart + k * L, oe = Math.min(os + L, cEnd), rate = clipRate(c, bpm); let startB = null, off = c.offset || 0;
           if (os >= b0 && os < b1) startB = os; else if (first && os < b0 && oe > b0) { startB = b0; off += (b0 - os) * spb * rate; }
           if (startB == null) continue;
           const src = ctx.createBufferSource(), gn = ctx.createGain(), g0 = db(c.gain || 0); src.buffer = buf; src.playbackRate.value = rate;
           // independent pitch: the pitch engine (same as Rose Tune) shifts without changing speed; it adds ~20 ms latency, so start that much early
-          const semis = clipSemis(c, t, p.bpm), pw = Math.abs(semis) > 0.004 ? worklet(ctx, 'rose-pitch') : null; let lat = 0;
+          const semis = clipSemis(c, t, bpm), pw = Math.abs(semis) > 0.004 ? worklet(ctx, 'rose-pitch') : null; let lat = 0;
           if (pw) { pw.parameters.get('mode').value = 1; pw.parameters.get('shift').value = Math.trunc(semis); pw.parameters.get('detune').value = (semis - Math.trunc(semis)) * 100; src.connect(pw).connect(gn); lat = 0.02; }
           else src.connect(gn);
           gn.connect(s.input); const dur = (oe - startB) * spb, when = Math.max(T(startB), ctx.currentTime), endT = T(oe);
@@ -322,7 +341,7 @@ export class Engine {
     }
     if (p.metronome && ctx === this.ctx) {
       for (let b = Math.ceil(b0 - 1e-9); b < b1; b++) {
-        const o = ctx.createOscillator(), gn = ctx.createGain(), t = T(b); o.frequency.value = b % p.sig === 0 ? 1760 : 1100;
+        const o = ctx.createOscillator(), gn = ctx.createGain(), t = T(b); o.frequency.value = Math.abs(barAt(p, b).beat) < 1e-6 ? 1760 : 1100;
         gn.gain.setValueAtTime(0.25, t); gn.gain.exponentialRampToValueAtTime(0.0001, t + 0.05); o.connect(gn).connect(ctx.destination); o.start(t); o.stop(t + 0.06);
       }
     }
@@ -416,12 +435,14 @@ export class Engine {
   // ---------- export ----------
   songEnd(p = this.p) { let end = 0; for (const t of p.tracks) for (const c of t.clips) end = Math.max(end, c.start + c.len); return Math.max(end, 1); }
   async render(p, endB, tail = 3) {
-    const sr = 44100, dur = endB * 60 / p.bpm + tail;
+    const sr = 44100, dur = secAt(p, endB) + tail;
     const ctx = new OfflineAudioContext(2, Math.ceil(sr * dur), sr); await prepareWorklets(ctx);
-    const g = await this.build(ctx, false, p); const seg = { t: 0, b: 0 };
+    const g = await this.build(ctx, false, p);
     [g.master, ...g.tracks.values(), ...g.returns.values()].forEach(s => s.fx.forEach(f => f.node?.sync?.(0, true, dur)));
-    this.schedule(ctx, seg, 0, endB, true, g, [], p, {});
-    if (p.tracks.some(t => t.auto?.length)) for (let b = 0; b <= endB; b += 1 / 32) this.applyAuto(g, p, b, b * 60 / p.bpm);
+    for (let b = 0; b < endB - 1e-9;) {   // one segment per tempo
+      const nb = Math.min(endB, nextTempoChange(p, b)); this.schedule(ctx, { t: secAt(p, b), b, bpm: bpmAt(p, b) }, b, nb, b === 0, g, [], p, {}); b = nb;
+    }
+    if (p.tracks.some(t => t.auto?.length)) for (let b = 0; b <= endB; b += 1 / 32) this.applyAuto(g, p, b, secAt(p, b));
     return ctx.startRendering();
   }
   async renderWav() {

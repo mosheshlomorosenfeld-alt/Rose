@@ -20,6 +20,9 @@ A DAW by Rosenfeld Productions, in two versions:
 - **Arrangement**: audio and instrument tracks, drag/resize/move clips between tracks, snap, zoom, loop region, split (Ctrl+E), duplicate (Ctrl+D), undo/redo
 - **Recording**: microphone/interface audio with latency compensation; MIDI from a keyboard or the computer keys (A–; with Z/X for octave)
 - **Editors**: piano roll (draw, move, resize, quantize, transpose) and a 16-step drum sequencer; audio clip gain and trim
+- **Windows menu**: pop-out mixer (Shift+X), clip editors in their own windows (open several), tuner, spectrum analyzer, LUFS loudness meter with whole-song measurement, stereo scope with correlation, reference-track A/B with loudness matching (Shift+B)
+- **Chord generator** (Shift+G): any key and scale (incl. Freygish), genre progressions or "Surprise me", 7ths/9ths/sus colours, smooth voice leading, close/open/drop-2/piano/pad voicings, 11 rhythms (house stabs, dembow, strum, oom-pah…) and bass lines
+- **Song tools**: markers (Shift+M, jump with , and .), arranger sections you can duplicate, move and delete, chord track (detect chords from MIDI, turn chords into pads or bass), tempo and time-signature changes
 - **Loops**: 47 free CC0 loops (drums, percussion, bass, chords, guitar, melody, ambience, FX) — search, preview at song tempo, drag into the arrangement; they follow tempo changes and can be pitched into any key
 - **Pitch anything**: clip pitch for audio (speed unchanged) and MIDI (Alt+↑/↓, Alt+Shift for octaves), fine-tune in cents, and whole-track transpose
 - **Drag and drop effects** from the Library onto mixer channels, track headers or the device rack; drag devices to reorder or move them (Alt/Option to copy)
